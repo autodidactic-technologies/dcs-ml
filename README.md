@@ -1,1 +1,8 @@
-The iLLM-TSC project was updated to use a local LLaMA 3.1–8B model instead of the OpenAI GPT API. All necessary changes were made in the rl_llm_tsc.py and in tsc_assistant.py to support local usage through Ollama on a MacBook Pro. Now, the traffic light control system runs fully offline without internet or API keys. The research paper related to the project was also included in the repository.
+  Notes
+	•	Tested with Python 3.9.
+	•	Create a conda environment named llmrl.
+	•	After cloning the repository, install all dependencies using requirements.txt.
+	•	Make sure Ollama is installed on your system.
+	•	Use the LLaMA 3.1 8B model locally via Ollama.
+	•	SUMO should be correctly installed and accessible from the environment.
+	•	You can run the simulation with a single command once setup is complete (rl_llm_tsc.py).
