@@ -11,7 +11,7 @@
 	•	Use the LLaMA 3.1 8B model locally via Ollama.
  
 	•	SUMO should be correctly installed and accessible from the environment.
-                Mine code was: os.environ['SUMO_HOME'] = '/opt/miniconda3/envs/llmrl'
-	                       os.environ['PATH'] = f"/opt/miniconda3/envs/llmrl/bin:{os.environ['PATH']}"
+                eg:  os.environ['SUMO_HOME'] = '/opt/miniconda3/envs/llmrl'
+	              os.environ['PATH'] = f"/opt/miniconda3/envs/llmrl/bin:{os.environ['PATH']}"
  
 	•	You can run the simulation with a single command once setup is complete (rl_llm_tsc.py).
