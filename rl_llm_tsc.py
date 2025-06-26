@@ -1,108 +1,58 @@
-import os
-# os.environ['SUMO_HOME'] = '/opt/miniconda3/envs/llmrl'
-# os.environ['PATH'] = f"/opt/miniconda3/envs/llmrl/bin:{os.environ['PATH']}"
-
-
-
-import os
-os.environ['SUMO_HOME'] = '/usr/bin/sumo'
-import os
-
-import torch
+import os, torch, gym, minigrid
 from loguru import logger
-
 from langchain_ollama import ChatOllama
 from langchain_core.runnables import RunnableLambda
-
-from tshub.utils.format_dict import dict_to_str
-from tshub.utils.get_abs_path import get_abs_path
-from tshub.utils.init_log import set_logger
-
-from TSCEnvironment.tsc_env import TSCEnvironment
-from TSCEnvironment.tsc_env_wrapper import TSCEnvWrapper
 from TSCAssistant.tsc_assistant import TSCAgent
-
-from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import VecNormalize, SubprocVecEnv
-
 from utils.make_tsc_env import make_env
-from utils.readConfig import read_config
+from stable_baselines3 import PPO
 
-# ============
-# Load config.yaml for LLM model settings
-# ============
-config = read_config()
-llm_model_name = config["LLM_MODEL"]
-llm_temperature = config.get("LLM_TEMPERATURE", 0.0)
-
-chat = ChatOllama(
-    model=llm_model_name,
-    temperature=llm_temperature
-)
-llm = RunnableLambda(lambda x: chat.invoke(x))  # wrap in LangChain interface
-
-
-# ============
-# Logger and path init
-# ============
-path_convert = get_abs_path(__file__)
-set_logger(path_convert('./'))
-
-
+# Optional utility
+import json
+def dict_to_str(d): return json.dumps(d, indent=2)
+# Set device
+if hasattr(torch.backends, "mps") and torch.backends.mps.is_built() and torch.backends.mps.is_available():
+    device = torch.device("mps")
+elif torch.backends.cuda.is_built() and torch.cuda.is_available():
+    device = torch.device("cuda")
+else:
+    device = torch.device("cpu")
+print("Using device:", device)
 if __name__ == '__main__':
-    # ============
-    # SUMO Config and Env Setup
-    # ============
-    sumo_cfg = path_convert("./TSCScenario/SumoNets/train_four_345/env/train_four_345.sumocfg")
-    trip_info = path_convert('./Result/LLM.tripinfo.xml')
+    # ====== LLM Setup ======
+    llm_model_name = "llama3"
+    llm_temperature = 0.0
+    chat = ChatOllama(model=llm_model_name, temperature=llm_temperature)
+    llm = RunnableLambda(lambda x: chat.invoke(x))
 
-    params = {
-        'tls_id': 'J1',
-        'num_seconds': 300,
-        'sumo_cfg': sumo_cfg,
-        'use_gui': True,
-        'log_file': './log_test/',
-        'trip_info': trip_info,
-    }
+    # ====== Env and PPO Model ======
+    env = make_env()()
+    device=device
+    model_path = "models/ppo_minigrid_doorkey_6x6.zip"
+    model = PPO.load(model_path, device=device)
 
-    env = SubprocVecEnv([make_env(env_index=f'{i}', **params) for i in range(1)])
-    env = VecNormalize.load(load_path=path_convert('./models/last_vec_normalize.pkl'), venv=env)
-    env.training = False
-    env.norm_reward = False
-
-    # ============
-    # Load trained RL model
-    # ============
-    # device = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model_path = path_convert('./models/last_rl_model.zip')
-    model = PPO.load(model_path, env=env, device=device)
-
-    # ============
-    # Initialize TSCAgent using local Ollama
-    # ============
+    # ====== LLM Agent + Inference Loop ======
     tsc_agent = TSCAgent(llm=llm, verbose=True)
+    obs, info = env.reset()
+    done = False
+    sim_step = 0
+    total_reward = 0
 
-    # ============
-    # Run test loop
-    # ============
-    dones = False
-    sim_step = 1
-    obs = env.reset()
-
-    while not dones:
-        action, _state = model.predict(obs, deterministic=True)
+    while not done:
+        action, _ = model.predict(obs, deterministic=True)
 
         if sim_step % 4 == 0:
             action = tsc_agent.agent_run(
                 sim_step=sim_step,
                 action=action,
                 obs=obs,
-                infos=infos  # previous step’s infos
-            ),
+                infos={"env": "MiniGrid-DoorKey-6x6-v0"}
+            )
 
-        obs, rewards, dones, infos = env.step(action)
+        obs, reward, terminated, truncated, info = env.step(int(action))
+        done = terminated or truncated
+        total_reward += reward
         sim_step += 1
+        env.render()
 
-    print('*********** Total Rewards ************', rewards)
+    print(f"\n✅ Done in {sim_step} steps, Total Reward: {total_reward}")
     env.close()
