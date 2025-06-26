@@ -1,10 +1,12 @@
 import os
+import wandb
 import minigrid
 import gymnasium as gym
 
 import torch
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import CheckpointCallback
+from wandb.integration.sb3 import WandbCallback
 from minigrid.wrappers import RGBImgPartialObsWrapper, ImgObsWrapper
 
 # Create and wrap the MiniGrid environment
@@ -15,6 +17,18 @@ def make_env(env_name = "MiniGrid-DoorKey-6x6-v0", max_steps=100):
     return env
 
 if __name__ == "__main__":
+    wandb.init(
+        project="PPO_MiniGrid_Training",
+        entity="BILGEM_DCS_RL",
+        config={
+            "env_name": "MiniGrid-DoorKey-6x6-v0",
+            "total_timesteps": 250_000,
+            "algo": "PPO",
+            "max_steps": 100
+        },
+        sync_tensorboard=True
+    )
+
     env = make_env()
 
     # Define model save path
@@ -38,6 +52,11 @@ if __name__ == "__main__":
 
 
     )
+    wandb_callback = WandbCallback(
+        gradient_save_freq=1000,
+        model_save_path="models/",
+        verbose=2
+    )
 
     # Optional: checkpoint every N steps
     checkpoint_callback = CheckpointCallback(
@@ -47,7 +66,7 @@ if __name__ == "__main__":
     )
 
     # Train the model
-    model.learn(total_timesteps=150_000, callback=checkpoint_callback)
+    model.learn(total_timesteps=250_000, callback=[checkpoint_callback, wandb_callback])
 
     # Save the final model
     model.save(save_path)
