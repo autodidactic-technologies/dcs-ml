@@ -52,20 +52,21 @@ if __name__ == "__main__":
 
 
     )
+    # Define Callbacks
     wandb_callback = WandbCallback(
         gradient_save_freq=1000,
         model_save_path="models/",
         verbose=2
     )
 
-    # Optional: checkpoint every N steps
+    # Checkpoint every N steps
     checkpoint_callback = CheckpointCallback(
         save_freq=10_000,
         save_path="./models/",
         name_prefix="ppo_minigrid_doorkey_6x6"
     )
 
-    # Train the model
+    # Train the model (
     model.learn(total_timesteps=250_000, callback=[checkpoint_callback, wandb_callback])
 
     # Save the final model
