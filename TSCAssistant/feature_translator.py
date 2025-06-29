@@ -105,16 +105,22 @@ def translate_features_for_llm(features: dict) -> dict:
     else:
         explanations["facing_direction_compass"] = "The agent’s compass-based facing direction is unknown."
     # Facing wall
-    facing_wall = features.get("facing_wall")
+    is_facing_wall = features.get("facing_wall")
     explanations["facing_wall"] = (
-        "The agent is currently facing a wall." if facing_wall
+        "The agent is currently facing a wall." if is_facing_wall
         else "The agent is not facing a wall."
     )
     # Facing key
-    facing_key = features.get("is_facing_key")
-    explanations["is_facing_key"] = (
-        "The agent is currently facing a key." if facing_key
+    is_facing_key = features.get("facing_key")
+    explanations["facing_key"] = (
+        "The agent is currently facing a key." if is_facing_key
         else "The agent is not facing a key."
+    )
+    #Facing door
+    is_facing_door = features.get("facing_door")
+    explanations["facing_door"] = (
+        "The agent is currently facing a door." if is_facing_door
+        else "The agent is not facing a door."
     )
 
     # Number of visible objects

@@ -137,9 +137,10 @@ class TSCAgent:
                 return False
 
         # … inside your feature extractor …
-        facing_wall = is_facing_object_agent_frame(agent_pos, direction, obj_map, OBJECT_TO_IDX["wall"])
+        is_facing_wall = is_facing_object_agent_frame(agent_pos, direction, obj_map, OBJECT_TO_IDX["wall"])
         # Similarly, you can now do:
         is_facing_key = is_facing_object_agent_frame(agent_pos, direction, obj_map, OBJECT_TO_IDX["key"])
+        is_facing_door = is_facing_object_agent_frame(agent_pos, direction, obj_map, OBJECT_TO_IDX["door"])
         return {
             "grid_size": grid_size,
             "agent_pos": agent_pos,
@@ -164,8 +165,9 @@ class TSCAgent:
             "is_adjacent_to_door": is_adj_door,
             "facing_direction_compass": facing_compass,
             "multiple_paths_open": multiple_paths_open,
-            "is_facing_key": is_facing_key,
-            "facing_wall": facing_wall,
+            "facing_key": is_facing_key,
+            "facing_wall": is_facing_wall,
+            "facing_door": is_facing_door,
             **counts
         }
 

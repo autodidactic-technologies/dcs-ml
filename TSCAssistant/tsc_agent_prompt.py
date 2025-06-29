@@ -48,7 +48,9 @@ You are the decision maker whether PPO Agent's Suggested Action is reasonable. F
 - To key:                {rel_dir_to_key}
 - To door:               {rel_dir_to_door}
 ⚠️ **Facing key**:
-- Facing key?            {is_facing_key}
+- Facing key?            {facing_key}
+- Facing wall?           {facing_wall}
+- Facing door?           {facing_door}
 
 🧭 **Agent facing direction like a compass**:      {facing_direction_compass}
 
