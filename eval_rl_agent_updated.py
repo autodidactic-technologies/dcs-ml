@@ -22,15 +22,15 @@ if __name__ == "__main__":
 
     # Load env and model
     env = make_env()
-    model_path = "models/ppo_minigrid_doorkey_6x6.zip"
+    model_path = "models/ppo_minigrid_doorkey_6x6_250000_steps_yedek.zip"
     model = PPO.load(model_path, device=device)
 
-    num_episodes = 10
+    num_episodes = 100
     rewards = []
     steps = []
 
     for episode in range(num_episodes):
-        obs, _ = env.reset()
+        obs, _ = env.reset(seed=episode)
         done = False
         episode_reward = 0
         step_count = 0
