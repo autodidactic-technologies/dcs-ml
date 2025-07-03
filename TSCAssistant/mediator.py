@@ -8,7 +8,7 @@ from minigrid.core.constants import OBJECT_TO_IDX, STATE_TO_IDX
 
 
 class AskingPolicy(nn.Module):
-    """FIXED: Enhanced asking policy with better initialization and regularization"""
+    """Enhanced asking policy with better initialization and regularization"""
 
     def __init__(self, obs_shape: tuple, hidden_dim: int = 64):
         super().__init__()
@@ -19,7 +19,7 @@ class AskingPolicy(nn.Module):
         self.network = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
             nn.ReLU(),
-            nn.Dropout(0.1),  # Add dropout for regularization
+            nn.Dropout(0.1),
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
             nn.Dropout(0.1),
@@ -28,11 +28,10 @@ class AskingPolicy(nn.Module):
             nn.Linear(32, 2)  # Ask or Not Ask
         )
 
-        # FIXED: Better initialization - start more balanced
+        # Better initialization - start more balanced
         with torch.no_grad():
-            # Start with slight bias towards not asking, but not extreme
-            self.network[-1].bias[0] = -0.1  # Ask bias (slightly negative)
-            self.network[-1].bias[1] = 0.1  # Not ask bias (slightly positive)
+            self.network[-1].bias[0] = -0.05  # Ask bias (slightly negative)
+            self.network[-1].bias[1] = 0.05  # Not ask bias (slightly positive)
 
             # Xavier initialization for better gradient flow
             for layer in self.network:
@@ -49,7 +48,7 @@ class AskingPolicy(nn.Module):
 
 class Mediator:
     """
-    COMPLETE FIXED: Enhanced mediator with LOOP DETECTION and aggressive penalty for unnecessary interrupts.
+    Enhanced mediator with GRADUAL loop detection and learning-friendly interruption management.
     """
 
     def __init__(self,
@@ -65,44 +64,51 @@ class Mediator:
         self.asking_policy = AskingPolicy(obs_shape).to(device)
         self.optimizer = torch.optim.Adam(self.asking_policy.parameters(), lr=learning_rate)
 
-        # FIXED: ALL state tracking attributes
+        # State tracking attributes
         self.previous_obs = None
         self.last_llm_plan = None
         self.steps_since_last_ask = 0
 
-        # Loop detection
-        self.recent_actions = deque(maxlen=10)
-        self.recent_positions = deque(maxlen=5)
+        # GRADUAL loop detection (less aggressive)
+        self.recent_actions = deque(maxlen=15)  # Increased from 10
+        self.recent_positions = deque(maxlen=8)  # Increased from 5
 
-        # NEW: Enhanced loop detection for LLM overrides
-        self.recent_llm_overrides = deque(maxlen=20)  # Track LLM override patterns
-        self.recent_situations = deque(maxlen=10)  # Track situation states
-        self.override_count_same_situation = 0  # Count overrides in same situation
-        self.forced_rl_mode_steps = 0  # Force RL mode counter
-        self.last_agent_pos = None  # Track position changes
-        self.position_stuck_count = 0  # Count steps without position change
+        # Enhanced but gradual loop detection for LLM overrides
+        self.recent_llm_overrides = deque(maxlen=25)  # Increased from 20
+        self.recent_situations = deque(maxlen=15)  # Increased from 10
+        self.override_count_same_situation = 0
+        self.forced_rl_mode_steps = 0
+        self.last_agent_pos = None
+        self.position_stuck_count = 0
 
-        # FIXED: ALL training progress tracking attributes (ESSENTIAL!)
-        self.ask_history = []  # ESSENTIAL - tracks ask decisions
-        self.reward_history = []  # ESSENTIAL - tracks rewards
-        self.loss_history = []  # ESSENTIAL - tracks NN loss
-        self.training_phase = "exploration"
+        # Learning phase tracking - ADDED
+        self.learning_phase = "early_exploration"  # early_exploration -> guided_learning -> autonomous
+        self.episodes_completed = 0
 
-        # FIXED: Aggressive penalty parameters for efficiency
-        self.lambda_penalty = 0.02  # Start higher for unnecessary interrupts
-        self.max_lambda = 0.2  # Higher max penalty
-        self.agreement_penalty = 0.1  # NEW: Specific penalty for asking but agreeing
-        self.gamma = 0.99  # Discount factor
-        self.recent_loss = 0.0  # For WandB tracking
+        # Training progress tracking attributes
+        self.ask_history = []
+        self.reward_history = []
+        self.loss_history = []
 
-        # FIXED: Reward smoothing attributes
+        # More lenient penalty parameters for learning
+        self.lambda_penalty = 0.01  # Start lower
+        self.max_lambda = 0.15  # Lower max penalty
+        self.agreement_penalty = 0.05  # Lower penalty to allow learning
+        self.gamma = 0.99
+        self.recent_loss = 0.0
+
+        # Reward smoothing
         self.reward_buffer = deque(maxlen=100)
         self.baseline_reward = 0.0
 
-        # FIXED: Interrupt tracking for efficiency
+        # Interrupt tracking with more tolerance
         self.recent_interrupts = deque(maxlen=50)
         self.recent_agreements = deque(maxlen=50)
-        self.interrupt_efficiency_threshold = 0.3  # Minimum efficiency required
+        self.interrupt_efficiency_threshold = 0.2  # Lower threshold
+
+        # Progressive learning parameters
+        self.loop_detection_sensitivity = 0.3  # Start less sensitive
+        self.emergency_threshold_multiplier = 2.0  # More lenient
 
     def should_ask_llm(self,
                        obs: Dict,
@@ -110,33 +116,34 @@ class Mediator:
                        use_learned_policy: bool = True,
                        force_exploration: bool = False) -> Tuple[bool, float]:
         """
-        FIXED: More conservative asking with ENHANCED LOOP DETECTION
+        More gradual asking with LEARNING-AWARE loop detection
         """
 
         # Ensure action is integer
         action = int(ppo_action) if hasattr(ppo_action, '__iter__') else ppo_action
 
-        # NEW: Check if we're in forced RL mode (loop detected)
+        # Gradually increase loop detection strictness
         if self.forced_rl_mode_steps > 0:
             self.forced_rl_mode_steps -= 1
-            if self.verbose:
-                logger.warning(f"🚫 FORCED RL MODE: {self.forced_rl_mode_steps} steps remaining")
-            return False, 0.05
+            if self.verbose and self.forced_rl_mode_steps % 3 == 0:
+                logger.info(f"🔒 Gradual RL mode: {self.forced_rl_mode_steps} steps remaining")
+            return False, 0.1
 
-        # NEW: Enhanced loop detection
-        if self._detect_and_handle_loops(obs, action):
-            return False, 0.05
+        # GRADUAL loop detection based on learning phase
+        if self._detect_gradual_loops(obs, action):
+            return False, 0.1
 
-        # PHASE 1: Even more conservative exploration
-        if len(self.ask_history) < 300:
-            return self._ultra_conservative_exploration(obs, action)
+        # PHASE-BASED asking strategy
+        if self.learning_phase == "early_exploration":
+            return self._early_exploration_asking(obs, action)
+        elif self.learning_phase == "guided_learning":
+            return self._guided_learning_asking(obs, action, use_learned_policy)
+        else:  # autonomous phase
+            return self._autonomous_asking(obs, action, use_learned_policy)
 
-        # PHASE 2: Efficiency-aware learned policy
-        return self._efficiency_aware_asking(obs, action, use_learned_policy)
-
-    def _detect_and_handle_loops(self, obs: Dict, ppo_action: int) -> bool:
+    def _detect_gradual_loops(self, obs: Dict, ppo_action: int) -> bool:
         """
-        NEW: Advanced loop detection to prevent infinite override cycles
+        GRADUAL loop detection that becomes stricter as agent learns
         """
         # Track current situation
         current_situation = self._get_situation_signature(obs, ppo_action)
@@ -150,95 +157,87 @@ class Mediator:
             self.position_stuck_count = 0
         self.last_agent_pos = agent_pos
 
-        # DETECTION 1: Same situation repeated too many times
-        if len(self.recent_situations) >= 5:
-            recent_situ = list(self.recent_situations)[-5:]
-            if len(set(recent_situ)) == 1:  # Exact same situation 5 times
+        # Adjust thresholds based on learning phase
+        if self.learning_phase == "early_exploration":
+            # Very lenient during early learning
+            same_situation_threshold = 8
+            stuck_threshold = 20
+            override_threshold = 10
+        elif self.learning_phase == "guided_learning":
+            # Moderate strictness
+            same_situation_threshold = 6
+            stuck_threshold = 15
+            override_threshold = 8
+        else:  # autonomous
+            # Normal strictness
+            same_situation_threshold = 4
+            stuck_threshold = 12
+            override_threshold = 6
+
+        # DETECTION 1: Same situation repeated (gradual threshold)
+        if len(self.recent_situations) >= same_situation_threshold:
+            recent_situ = list(self.recent_situations)[-same_situation_threshold:]
+            if len(set(recent_situ)) == 1:
                 if self.verbose:
-                    logger.warning("🔄 LOOP DETECTED: Same situation 5 times - entering forced RL mode")
-                self.forced_rl_mode_steps = 10
+                    logger.warning(f"🔄 Gradual loop detected: Same situation {same_situation_threshold} times")
+                self.forced_rl_mode_steps = max(3, same_situation_threshold // 2)  # Shorter forced mode
                 return True
 
-        # DETECTION 2: LLM override oscillation
-        if len(self.recent_llm_overrides) >= 6:
-            recent_overrides = list(self.recent_llm_overrides)[-6:]
-            unique_overrides = len(set(recent_overrides))
-            if unique_overrides <= 2:  # Oscillating between 2 actions
+        # DETECTION 2: Position stuck with learning consideration
+        if self.position_stuck_count >= stuck_threshold:
+            recent_ask_rate = np.mean(self.ask_history[-10:]) if len(self.ask_history) >= 10 else 0
+            if recent_ask_rate > 0.6:  # Only if asking too frequently
                 if self.verbose:
-                    logger.warning("🔄 LOOP DETECTED: LLM override oscillation - entering forced RL mode")
-                self.forced_rl_mode_steps = 8
+                    logger.warning(f"🔄 Position stuck loop: {self.position_stuck_count} steps")
+                self.forced_rl_mode_steps = stuck_threshold // 3
                 return True
 
-        # DETECTION 3: Position stuck with frequent asking
-        if self.position_stuck_count >= 10 and len(self.ask_history) >= 10:
-            recent_ask_rate = np.mean(self.ask_history[-10:])
-            if recent_ask_rate > 0.7:  # High asking rate while stuck
+        # DETECTION 3: Override oscillation (more lenient)
+        if len(self.recent_llm_overrides) >= override_threshold:
+            pattern = list(self.recent_llm_overrides)[-override_threshold:]
+            unique_overrides = len(set(pattern))
+            if unique_overrides <= 2 and len(pattern) >= override_threshold:
                 if self.verbose:
-                    logger.warning("🔄 LOOP DETECTED: Stuck position with high asking rate - entering forced RL mode")
-                self.forced_rl_mode_steps = 15
-                return True
-
-        # DETECTION 4: Repetitive override pattern
-        if len(self.recent_llm_overrides) >= 8:
-            # Check for ABAB pattern or AAA pattern
-            pattern = list(self.recent_llm_overrides)[-8:]
-            if (pattern[0] == pattern[2] == pattern[4] == pattern[6] and
-                    pattern[1] == pattern[3] == pattern[5] == pattern[7]):
-                if self.verbose:
-                    logger.warning("🔄 LOOP DETECTED: ABAB override pattern - entering forced RL mode")
-                self.forced_rl_mode_steps = 12
+                    logger.warning(f"🔄 Override oscillation detected")
+                self.forced_rl_mode_steps = override_threshold // 2
                 return True
 
         return False
 
-    def _get_situation_signature(self, obs: Dict, ppo_action: int) -> str:
+    def _early_exploration_asking(self, obs: Dict, action: int) -> Tuple[bool, float]:
         """
-        NEW: Create a signature for the current situation to detect loops
+        Early exploration phase: Encourage learning with minimal penalties
         """
-        features = self._extract_features(obs)
-
-        # Create a compact situation signature
-        signature = f"pos:{features.get('agent_pos')}_key:{features.get('key_pos')}_door:{features.get('door_pos')}_haskey:{features.get('has_key', False)}_action:{ppo_action}"
-
-        return signature
-
-    def _ultra_conservative_exploration(self, obs: Dict, action: int) -> Tuple[bool, float]:
-        """FIXED: Ultra conservative exploration to prevent wasteful interrupts"""
-
-        # ALWAYS ask if action is clearly problematic
+        # Always ask for clearly problematic actions
         if self._is_problematic_action(obs, action):
             return True, 0.95
 
-        # CRITICAL situations only
+        # Ask for critical situations to build understanding
         if self._is_critical_situation(obs, action):
             return True, 0.9
 
-        # VERY rare random exploration (reduced to 3% due to loop issues)
-        if self.steps_since_last_ask >= 20 and np.random.random() < 0.03:
-            return True, 0.5
+        # Increased exploration during early phase
+        if self.steps_since_last_ask >= 12 and np.random.random() < 0.15:  # 15% chance
+            return True, 0.7
 
-        return False, 0.2
+        # Periodic asking to build experience
+        if self.steps_since_last_ask >= 20:
+            return True, 0.6
 
-    def _efficiency_aware_asking(self, obs: Dict, ppo_action: int, use_learned_policy: bool) -> Tuple[bool, float]:
-        """FIXED: Efficiency-aware asking that considers recent performance"""
+        return False, 0.3
 
-        # Calculate recent efficiency
-        if len(self.recent_interrupts) > 10:
-            # FIXED: Convert deque to list for slicing
-            recent_interrupt_rate = np.mean(list(self.recent_interrupts)[-20:])
-            recent_agreement_rate = np.mean(list(self.recent_agreements)[-20:])
-            efficiency = 1 - (recent_agreement_rate / max(recent_interrupt_rate, 0.01))
-        else:
-            efficiency = 0.5  # Neutral
-
-        # SAFETY: Always override learned policy for critical situations
+    def _guided_learning_asking(self, obs: Dict, ppo_action: int, use_learned_policy: bool) -> Tuple[bool, float]:
+        """
+        Guided learning phase: Use learned policy with safety net
+        """
+        # Safety checks first
         if self._is_critical_situation(obs, ppo_action):
             return True, 0.9
 
         if not use_learned_policy:
             return self._heuristic_asking_decision(obs, ppo_action)
 
-        # Use neural network with efficiency adjustment
+        # Use neural network with learning-friendly adjustments
         if self.previous_obs is None:
             return True, 1.0
 
@@ -250,72 +249,110 @@ class Mediator:
             probabilities = torch.softmax(logits, dim=0)
             ask_prob = probabilities[0].item()
 
-            # FIXED: Efficiency-adjusted threshold with loop consideration
-            base_threshold = 0.6
-            if efficiency < 0.2:
-                # Very low efficiency: be much more selective
-                threshold = 0.85
-            elif efficiency < 0.4:
-                # Low efficiency: be more selective
+            # Learning-friendly threshold adjustment
+            base_threshold = 0.55  # Lower threshold for learning
+
+            # Adjust based on recent performance (more forgiving)
+            recent_efficiency = self._calculate_recent_efficiency()
+            if recent_efficiency < 0.15:  # Very low efficiency
                 threshold = 0.75
+            elif recent_efficiency < 0.3:  # Low efficiency
+                threshold = 0.65
             else:
-                # Good efficiency: normal threshold
                 threshold = base_threshold
-
-            # NEW: Additional threshold adjustment for loop prevention
-            if self.position_stuck_count > 5:
-                threshold += 0.1  # Make asking harder when stuck
-
-            if len(self.recent_llm_overrides) > 5:
-                recent_override_rate = len([x for x in self.recent_llm_overrides if x == ppo_action]) / len(
-                    self.recent_llm_overrides)
-                if recent_override_rate > 0.6:  # Same action overridden frequently
-                    threshold += 0.2  # Much harder to ask
 
             should_ask = ask_prob > threshold
 
         self.steps_since_last_ask += 1
-
         if should_ask:
             self.steps_since_last_ask = 0
 
         return should_ask, ask_prob
 
+    def _autonomous_asking(self, obs: Dict, ppo_action: int, use_learned_policy: bool) -> Tuple[bool, float]:
+        """
+        Autonomous phase: Full reliance on learned policy with efficiency considerations
+        """
+        # Safety checks
+        if self._is_critical_situation(obs, ppo_action):
+            return True, 0.9
+
+        if not use_learned_policy:
+            return self._heuristic_asking_decision(obs, ppo_action)
+
+        # Standard neural network usage
+        if self.previous_obs is None:
+            return True, 1.0
+
+        current_obs_tensor = self._obs_to_tensor(obs)
+        previous_obs_tensor = self._obs_to_tensor(self.previous_obs)
+
+        with torch.no_grad():
+            logits = self.asking_policy(current_obs_tensor, previous_obs_tensor)
+            probabilities = torch.softmax(logits, dim=0)
+            ask_prob = probabilities[0].item()
+
+            # Standard efficiency-based threshold
+            recent_efficiency = self._calculate_recent_efficiency()
+            if recent_efficiency < 0.2:
+                threshold = 0.8
+            elif recent_efficiency < 0.4:
+                threshold = 0.7
+            else:
+                threshold = 0.6
+
+            should_ask = ask_prob > threshold
+
+        self.steps_since_last_ask += 1
+        if should_ask:
+            self.steps_since_last_ask = 0
+
+        return should_ask, ask_prob
+
+    def _calculate_recent_efficiency(self) -> float:
+        """Calculate recent interrupt efficiency"""
+        if len(self.recent_interrupts) < 5:
+            return 0.5  # Neutral efficiency for insufficient data
+
+        recent_interrupt_rate = np.mean(list(self.recent_interrupts)[-20:])
+        recent_agreement_rate = np.mean(list(self.recent_agreements)[-20:])
+
+        if recent_interrupt_rate < 0.01:
+            return 1.0  # Perfect efficiency if not interrupting
+
+        return 1 - (recent_agreement_rate / recent_interrupt_rate)
+
     def _is_problematic_action(self, obs: Dict, ppo_action: int) -> bool:
         """Detect problematic actions that need LLM intervention"""
-
-        # Ensure action is integer
         action = int(ppo_action) if hasattr(ppo_action, '__iter__') else ppo_action
 
         # Invalid actions
         if action in [4, 6]:  # Drop, Done (forbidden)
             return True
 
-        # NEW: Don't ask if we're in a detected loop situation
+        # Don't ask if we're in forced mode (learning from natural RL)
         if self.forced_rl_mode_steps > 0:
             return False
 
-        # Action loops
+        # Action loops (more lenient thresholds)
         self.recent_actions.append(action)
-        if len(self.recent_actions) >= 5:
-            # Same action repeated 5+ times
-            if len(set(list(self.recent_actions)[-5:])) == 1:
+        if len(self.recent_actions) >= 8:  # Increased from 5
+            # Same action repeated many times
+            if len(set(list(self.recent_actions)[-6:])) == 1:
                 return True
 
-            # Oscillating between 2 actions
-            last_4 = list(self.recent_actions)[-4:]
-            if len(set(last_4)) == 2 and last_4[0] == last_4[2] and last_4[1] == last_4[3]:
+            # Oscillating between 2 actions (check longer pattern)
+            last_6 = list(self.recent_actions)[-6:]
+            if len(set(last_6)) == 2 and last_6[0] == last_6[2] == last_6[4] and last_6[1] == last_6[3] == last_6[5]:
                 return True
 
         return False
 
     def _is_critical_situation(self, obs: Dict, ppo_action: int) -> bool:
         """Detect critical situations that always need LLM"""
-
-        # Ensure action is integer
         action = int(ppo_action) if hasattr(ppo_action, '__iter__') else ppo_action
 
-        # NEW: Don't override if we're in forced RL mode
+        # Don't override if we're in learning mode
         if self.forced_rl_mode_steps > 0:
             return False
 
@@ -326,29 +363,29 @@ class Mediator:
         # Extract features for situation analysis
         features = self._extract_features(obs)
 
-        # Critical situations (but respect forced RL mode)
-        if features.get('is_adjacent_to_key') and action != 3:
+        # Critical situations (but respect learning mode)
+        if features.get('is_adjacent_to_key') and not features.get('has_key', False) and action != 3:
             return True
 
         if features.get('facing_wall') and action == 2:
             return True
 
-        if features.get('is_adjacent_to_door') and action != 5:
+        if features.get('is_adjacent_to_door') and features.get('has_key', False) and action != 5:
             return True
 
         # Check if trying to go through closed door
         if features.get('facing_door') and not features.get('door_is_open', False) and action == 2:
             return True
 
-        # Been too long without asking (but not if stuck)
-        if self.steps_since_last_ask > 15 and self.position_stuck_count < 5:
+        # Been too long without asking (adjusted for learning phase)
+        max_steps = 25 if self.learning_phase == "early_exploration" else 18
+        if self.steps_since_last_ask > max_steps and self.position_stuck_count < 8:
             return True
 
         return False
 
     def _heuristic_asking_decision(self, obs: Dict, ppo_action: int) -> Tuple[bool, float]:
         """Enhanced heuristic asking policy"""
-
         action = int(ppo_action) if hasattr(ppo_action, '__iter__') else ppo_action
 
         if self._is_critical_situation(obs, action):
@@ -357,8 +394,9 @@ class Mediator:
         if self._significant_obs_change(obs):
             return True, 0.7
 
-        # Reduced periodic asking
-        if self.steps_since_last_ask >= 18:
+        # Phase-aware periodic asking
+        max_steps = 25 if self.learning_phase == "early_exploration" else 18
+        if self.steps_since_last_ask >= max_steps:
             return True, 0.6
 
         return False, 0.3
@@ -390,19 +428,18 @@ class Mediator:
                             asked_llm: bool,
                             llm_plan_changed: bool):
         """
-        FIXED: Aggressive penalty for asking but agreeing (unnecessary interrupts) with loop detection
+        LEARNING-FRIENDLY training with gradual penalty increase
         """
-
         if self.previous_obs is None:
             self.previous_obs = obs
             return
 
-        # NEW: Track LLM overrides for loop detection
+        # Track LLM overrides for loop detection
         if asked_llm and llm_plan_changed:
             self.recent_llm_overrides.append(action)
 
-        # FIXED: Compute reward with aggressive agreement penalty
-        mediator_reward = self._compute_llm4rl_reward(
+        # Compute reward with learning-phase-aware penalties
+        mediator_reward = self._compute_learning_aware_reward(
             task_reward=reward,
             asked_llm=asked_llm,
             llm_plan_changed=llm_plan_changed
@@ -423,10 +460,11 @@ class Mediator:
         else:
             policy_loss = -torch.log(not_ask_prob + 1e-8) * mediator_reward
 
-        # Add entropy bonus and L2 regularization
+        # Add entropy bonus (higher during learning)
+        entropy_bonus_weight = 0.03 if self.learning_phase == "early_exploration" else 0.02
         entropy = -(ask_prob * torch.log(ask_prob + 1e-8) +
                     not_ask_prob * torch.log(not_ask_prob + 1e-8))
-        entropy_bonus = 0.02 * entropy
+        entropy_bonus = entropy_bonus_weight * entropy
 
         # L2 regularization
         l2_reg = 0.001 * sum(p.pow(2.0).sum() for p in self.asking_policy.parameters())
@@ -437,48 +475,39 @@ class Mediator:
         self.optimizer.zero_grad()
         total_loss.backward()
 
-        # Aggressive gradient clipping
-        torch.nn.utils.clip_grad_norm_(self.asking_policy.parameters(), 0.2)
+        # Learning-phase-aware gradient clipping
+        grad_clip = 0.3 if self.learning_phase == "early_exploration" else 0.2
+        torch.nn.utils.clip_grad_norm_(self.asking_policy.parameters(), grad_clip)
         self.optimizer.step()
 
-        # ESSENTIAL: Track statistics
+        # Track statistics
         self.ask_history.append(asked_llm)
         self.reward_history.append(mediator_reward)
         self.loss_history.append(total_loss.item())
         self.recent_loss = total_loss.item()
 
-        # Update penalties
-        self._update_lambda_penalty()
+        # Update learning phase
+        self._update_learning_phase()
 
-        # Phase transition
-        if len(self.ask_history) >= 300 and self.training_phase == "exploration":
-            recent_performance = np.mean(self.reward_history[-50:]) if len(self.reward_history) >= 50 else np.mean(
-                self.reward_history)
-            if recent_performance > -0.1:
-                self.training_phase = "exploitation"
-                if self.verbose:
-                    logger.info("Mediator transitioning to exploitation phase")
+        # Update penalties gradually
+        self._update_gradual_penalties()
 
         # Progress logging
-        if self.verbose and len(self.ask_history) % 30 == 0:
+        if self.verbose and len(self.ask_history) % 50 == 0:
             recent_ask_rate = np.mean(self.ask_history[-30:])
             recent_reward = np.mean(self.reward_history[-30:])
             recent_loss = np.mean(self.loss_history[-10:]) if len(self.loss_history) >= 10 else 0
 
-            # NEW: Loop detection status
-            loop_status = "FORCE_RL" if self.forced_rl_mode_steps > 0 else "NORMAL"
-
             logger.info(f"Mediator Stats: Ask Rate={recent_ask_rate:.3f}, "
                         f"Avg Reward={recent_reward:.3f}, Loss={recent_loss:.3f}, "
-                        f"Phase={self.training_phase}, λ={self.lambda_penalty:.3f}, "
-                        f"Loop_Status={loop_status}, Stuck_Count={self.position_stuck_count}")
+                        f"Phase={self.learning_phase}, λ={self.lambda_penalty:.3f}, "
+                        f"Forced_RL={self.forced_rl_mode_steps}, Stuck={self.position_stuck_count}")
 
-    def _compute_llm4rl_reward(self, task_reward: float, asked_llm: bool, llm_plan_changed: bool) -> float:
+    def _compute_learning_aware_reward(self, task_reward: float, asked_llm: bool, llm_plan_changed: bool) -> float:
         """
-        FIXED: Much more aggressive penalty for unnecessary interrupts (asking but agreeing)
+        Learning-phase-aware reward computation with gradual penalty increase
         """
-
-        # Update baseline (moving average)
+        # Update baseline
         self.reward_buffer.append(task_reward)
         if len(self.reward_buffer) > 10:
             self.baseline_reward = np.mean(list(self.reward_buffer)[-50:])
@@ -491,103 +520,102 @@ class Mediator:
         self.recent_interrupts.append(asked_llm)
         self.recent_agreements.append(asked_llm and not llm_plan_changed)
 
-        # Calculate interrupt efficiency
-        recent_interrupt_rate = np.mean(self.recent_interrupts) if self.recent_interrupts else 0
-        recent_agreement_rate = np.mean(self.recent_agreements) if self.recent_agreements else 0
-        interrupt_efficiency = 1 - (recent_agreement_rate / max(recent_interrupt_rate, 0.01))
+        # Phase-aware penalty scaling
+        if self.learning_phase == "early_exploration":
+            penalty_scale = 0.5  # Reduced penalties
+            bonus_scale = 1.2  # Increased bonuses
+        elif self.learning_phase == "guided_learning":
+            penalty_scale = 0.75
+            bonus_scale = 1.0
+        else:  # autonomous
+            penalty_scale = 1.0
+            bonus_scale = 0.8
 
-        # FIXED: Much more aggressive penalty system
         penalty = 0.0
         bonus = 0.0
 
         if asked_llm:
             if llm_plan_changed:
-                # GOOD: Asked and got different plan
+                # Good intervention
                 if task_reward > 0:
-                    bonus = 0.1  # Good intervention bonus
+                    bonus = 0.1 * bonus_scale
                 elif task_reward <= 0:
-                    penalty = 0.05  # Small penalty for bad intervention
+                    penalty = 0.03 * penalty_scale  # Reduced penalty
             else:
-                # BAD: Asked but LLM agreed (WASTE OF RESOURCES!)
-                base_penalty = self.agreement_penalty
+                # Asked but agreed - scale penalty based on learning phase
+                base_penalty = self.agreement_penalty * penalty_scale
 
-                # ESCALATING PENALTY: More you agree, higher the penalty
-                if recent_agreement_rate > 0.3:  # If >30% agreements
-                    escalation_factor = 2.0 + (recent_agreement_rate - 0.3) * 5
+                # Less aggressive escalation during learning
+                recent_agreement_rate = np.mean(list(self.recent_agreements)[-20:]) if len(
+                    self.recent_agreements) >= 20 else 0
+                if recent_agreement_rate > 0.4:  # More lenient threshold
+                    escalation_factor = 1.5 + (recent_agreement_rate - 0.4) * 2  # Reduced escalation
                     penalty = base_penalty * escalation_factor
                 else:
                     penalty = base_penalty
 
-                # EFFICIENCY PENALTY: Low efficiency = higher penalty
-                if interrupt_efficiency < self.interrupt_efficiency_threshold:
-                    efficiency_penalty = (self.interrupt_efficiency_threshold - interrupt_efficiency) * 0.5
-                    penalty += efficiency_penalty
-
-                # NEW: Loop penalty - if we're in a detected loop situation
-                if self.position_stuck_count > 8:
-                    penalty += 0.15  # Heavy penalty for asking while stuck
-
-                # Cap penalty to prevent explosion
-                penalty = min(penalty, 0.6)
+                # Cap penalty to prevent learning disruption
+                max_penalty = 0.3 if self.learning_phase == "early_exploration" else 0.5
+                penalty = min(penalty, max_penalty)
 
         else:
             # Didn't ask
             if task_reward <= -0.1:
-                # Should have asked in clearly bad situation (but not if forced RL mode)
+                # Should have asked (but more lenient during learning)
                 if self.forced_rl_mode_steps == 0:
-                    penalty = 0.02
+                    penalty = 0.015 * penalty_scale  # Reduced penalty
             elif task_reward > 0.5:
                 # Good: didn't interrupt successful action
-                bonus = 0.02
+                bonus = 0.02 * bonus_scale
 
         total_reward = base_reward + bonus - penalty
 
-        # Aggressive clipping for stability
-        total_reward = np.clip(total_reward, -0.8, 0.8)
-
-        # Debug logging for tuning
-        if self.verbose and len(self.ask_history) % 20 == 0:
-            logger.info(f"Reward Debug: base={base_reward:.3f}, bonus={bonus:.3f}, penalty={penalty:.3f}, "
-                        f"interrupt_eff={interrupt_efficiency:.3f}, agreement_rate={recent_agreement_rate:.3f}, "
-                        f"stuck_count={self.position_stuck_count}")
+        # Learning-phase-aware clipping
+        if self.learning_phase == "early_exploration":
+            total_reward = np.clip(total_reward, -0.5, 0.8)  # Less harsh negative clipping
+        else:
+            total_reward = np.clip(total_reward, -0.8, 0.8)
 
         return total_reward
 
-    def _update_lambda_penalty(self):
-        """FIXED: Dynamic penalty based on interrupt efficiency (deque safe)"""
-        progress = min(len(self.ask_history) / 1000.0, 1.0)
+    def _update_learning_phase(self):
+        """Update learning phase based on progress"""
+        num_episodes = len(self.ask_history) // 30  # Approximate episodes
 
-        # Base progression: 0.02 → 0.1
-        base_lambda = 0.02 + progress * 0.08
-
-        # ADAPTIVE: Increase penalty if efficiency is low
-        if len(self.recent_interrupts) > 20:
-            # FIXED: Convert deque to list for slicing
-            recent_interrupt_rate = np.mean(list(self.recent_interrupts)[-20:])
-            recent_agreement_rate = np.mean(list(self.recent_agreements)[-20:])
-
-            if recent_interrupt_rate > 0.01:
-                efficiency = 1 - (recent_agreement_rate / recent_interrupt_rate)
-
-                # If efficiency < 30%, increase penalty aggressively
-                if efficiency < 0.3:
-                    efficiency_multiplier = 2.0 + (0.3 - efficiency) * 3
-                    self.lambda_penalty = min(base_lambda * efficiency_multiplier, self.max_lambda)
-                else:
-                    self.lambda_penalty = base_lambda
-            else:
-                self.lambda_penalty = base_lambda
+        if num_episodes < 10:  # First 10 episodes
+            self.learning_phase = "early_exploration"
+        elif num_episodes < 25:  # Next 15 episodes
+            self.learning_phase = "guided_learning"
         else:
-            self.lambda_penalty = base_lambda
+            self.learning_phase = "autonomous"
 
-        # Update agreement penalty based on recent performance
-        if len(self.recent_agreements) > 30:
-            # FIXED: Convert deque to list for slicing
-            recent_agreement_rate = np.mean(list(self.recent_agreements)[-30:])
-            if recent_agreement_rate > 0.4:  # If >40% agreements
-                self.agreement_penalty = min(0.2, 0.1 + (recent_agreement_rate - 0.4) * 0.5)
-            else:
-                self.agreement_penalty = 0.1
+    def _update_gradual_penalties(self):
+        """Gradually increase penalties as agent learns"""
+        progress = min(len(self.ask_history) / 1500.0, 1.0)  # Slower progression
+
+        # Gradual penalty increase
+        if self.learning_phase == "early_exploration":
+            self.lambda_penalty = 0.005 + progress * 0.01  # Very low start
+            self.agreement_penalty = 0.02 + progress * 0.03
+        elif self.learning_phase == "guided_learning":
+            self.lambda_penalty = 0.01 + progress * 0.05
+            self.agreement_penalty = 0.05 + progress * 0.05
+        else:  # autonomous
+            self.lambda_penalty = 0.02 + progress * 0.08
+            self.agreement_penalty = 0.1 + progress * 0.1
+
+        # Cap penalties
+        self.lambda_penalty = min(self.lambda_penalty, self.max_lambda)
+        self.agreement_penalty = min(self.agreement_penalty, 0.15)
+
+    def _get_situation_signature(self, obs: Dict, ppo_action: int) -> str:
+        """Create a signature for the current situation to detect loops"""
+        features = self._extract_features(obs)
+
+        # Create a compact situation signature
+        signature = f"pos:{features.get('agent_pos')}_key:{features.get('key_pos')}_door:{features.get('door_pos')}_haskey:{features.get('has_key', False)}_action:{ppo_action}"
+
+        return signature
 
     def _obs_to_tensor(self, obs: Dict) -> torch.Tensor:
         """Convert observation dictionary to tensor."""
@@ -651,6 +679,7 @@ class Mediator:
             'facing_key': is_facing_object(agent_pos, key_pos),
             'facing_door': is_facing_object(agent_pos, door_pos),
             'facing_wall': False,
+            'has_key': False,  # This will be overridden by TSC agent
         }
 
         return features
@@ -660,7 +689,7 @@ class Mediator:
         self.previous_obs = obs.copy() if obs else None
 
     def get_statistics(self) -> Dict:
-        """FIXED: Enhanced statistics with efficiency metrics and loop detection info"""
+        """Enhanced statistics with learning phase and efficiency metrics"""
         if not self.ask_history:
             return {
                 'total_steps': 0,
@@ -669,7 +698,7 @@ class Mediator:
                 'recent_ask_rate': 0.0,
                 'recent_avg_reward': 0.0,
                 'recent_loss': 0.0,
-                'training_phase': self.training_phase,
+                'learning_phase': self.learning_phase,
                 'lambda_penalty': self.lambda_penalty,
                 'agreement_penalty': self.agreement_penalty,
                 'baseline_reward': self.baseline_reward,
@@ -684,14 +713,12 @@ class Mediator:
             }
 
         # Calculate efficiency metrics
-        # FIXED: Convert deque to list for slicing
         recent_interrupt_rate = np.mean(list(self.recent_interrupts)[-50:]) if len(
             self.recent_interrupts) >= 50 else np.mean(list(self.recent_interrupts)) if self.recent_interrupts else 0
         recent_agreement_rate = np.mean(list(self.recent_agreements)[-50:]) if len(
             self.recent_agreements) >= 50 else np.mean(list(self.recent_agreements)) if self.recent_agreements else 0
 
-        efficiency = 1 - (
-                recent_agreement_rate / max(recent_interrupt_rate, 0.01)) if recent_interrupt_rate > 0 else 1.0
+        efficiency = self._calculate_recent_efficiency()
 
         return {
             'total_steps': len(self.ask_history),
@@ -702,7 +729,7 @@ class Mediator:
             'recent_avg_reward': np.mean(self.reward_history[-100:]) if len(self.reward_history) >= 100 else np.mean(
                 self.reward_history),
             'recent_loss': np.mean(self.loss_history[-10:]) if len(self.loss_history) >= 10 else 0,
-            'training_phase': self.training_phase,
+            'learning_phase': self.learning_phase,
             'lambda_penalty': self.lambda_penalty,
             'agreement_penalty': self.agreement_penalty,
             'baseline_reward': self.baseline_reward,
@@ -712,7 +739,6 @@ class Mediator:
             'efficiency_threshold': self.interrupt_efficiency_threshold,
             'successful_episodes': sum(1 for r in self.reward_history[-100:] if r > 0) if len(
                 self.reward_history) >= 100 else sum(1 for r in self.reward_history if r > 0),
-            # NEW: Loop detection statistics
             'forced_rl_mode_steps': self.forced_rl_mode_steps,
             'position_stuck_count': self.position_stuck_count,
             'recent_override_count': len(self.recent_llm_overrides),
@@ -727,13 +753,12 @@ class Mediator:
             'ask_history': self.ask_history,
             'reward_history': self.reward_history,
             'loss_history': self.loss_history,
-            'training_phase': self.training_phase,
+            'learning_phase': self.learning_phase,
             'lambda_penalty': self.lambda_penalty,
             'agreement_penalty': self.agreement_penalty,
             'baseline_reward': self.baseline_reward,
             'recent_interrupts': list(self.recent_interrupts),
             'recent_agreements': list(self.recent_agreements),
-            # NEW: Save loop detection state
             'recent_llm_overrides': list(self.recent_llm_overrides),
             'forced_rl_mode_steps': self.forced_rl_mode_steps,
             'position_stuck_count': self.position_stuck_count,
@@ -747,13 +772,12 @@ class Mediator:
         self.ask_history = checkpoint.get('ask_history', [])
         self.reward_history = checkpoint.get('reward_history', [])
         self.loss_history = checkpoint.get('loss_history', [])
-        self.training_phase = checkpoint.get('training_phase', 'exploration')
-        self.lambda_penalty = checkpoint.get('lambda_penalty', 0.02)
-        self.agreement_penalty = checkpoint.get('agreement_penalty', 0.1)
+        self.learning_phase = checkpoint.get('learning_phase', 'early_exploration')
+        self.lambda_penalty = checkpoint.get('lambda_penalty', 0.01)
+        self.agreement_penalty = checkpoint.get('agreement_penalty', 0.05)
         self.baseline_reward = checkpoint.get('baseline_reward', 0.0)
         self.recent_interrupts = deque(checkpoint.get('recent_interrupts', []), maxlen=50)
         self.recent_agreements = deque(checkpoint.get('recent_agreements', []), maxlen=50)
-        # NEW: Load loop detection state
-        self.recent_llm_overrides = deque(checkpoint.get('recent_llm_overrides', []), maxlen=20)
+        self.recent_llm_overrides = deque(checkpoint.get('recent_llm_overrides', []), maxlen=25)
         self.forced_rl_mode_steps = checkpoint.get('forced_rl_mode_steps', 0)
         self.position_stuck_count = checkpoint.get('position_stuck_count', 0)

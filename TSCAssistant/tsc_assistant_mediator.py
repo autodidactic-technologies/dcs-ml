@@ -12,7 +12,7 @@ from minigrid.core.constants import OBJECT_TO_IDX, STATE_TO_IDX
 
 class TSCAgentWithMediator:
     """
-    FIXED: Enhanced TSC Agent with better mediator integration and ADVANCED LOOP DETECTION.
+    Enhanced TSC Agent with learning-aware mediator integration and GRADUAL loop detection.
     """
 
     def __init__(self,
@@ -25,12 +25,12 @@ class TSCAgentWithMediator:
         self.verbose = verbose
         self.train_mediator = train_mediator
 
-        # Initialize mediator with FIXED parameters
+        # Initialize mediator with learning-friendly parameters
         self.mediator = Mediator(
             obs_shape=obs_shape,
             device=device,
             verbose=verbose,
-            learning_rate=1e-4  # FIXED: Lower learning rate
+            learning_rate=1e-4
         )
 
         # Track LLM interactions
@@ -38,42 +38,45 @@ class TSCAgentWithMediator:
         self.interaction_count = 0
         self.override_count = 0
 
-        # FIXED: Add performance tracking
-        self.recent_overrides = deque(maxlen=20)
-        self.recent_successes = deque(maxlen=20)
+        # Performance tracking for learning
+        self.recent_overrides = deque(maxlen=30)  # Increased window
+        self.recent_successes = deque(maxlen=30)
 
-        # NEW: Enhanced loop detection at TSC level
+        # GRADUAL loop detection at TSC level
         self.consecutive_same_llm_decision = 0
         self.last_llm_action = None
         self.last_rl_action = None
         self.same_situation_count = 0
         self.last_situation_hash = None
 
-        # NEW: Emergency circuit breaker
-        self.emergency_rl_mode = 0  # Counter for emergency RL-only mode
-        self.llm_failure_count = 0  # Track LLM consecutive failures
+        # Learning-aware emergency circuit breaker
+        self.emergency_rl_mode = 0
+        self.llm_failure_count = 0
+        self.learning_tolerance_multiplier = 2.0  # More tolerance during learning
+
+        # Context tracking for better prompts
+        self.interaction_history = deque(maxlen=10)
+        self.performance_trend = deque(maxlen=20)
 
     def extract_features(self, obs: np.ndarray, info: dict) -> dict:
         """
-        ENHANCED feature extraction - combines original mediator features
-        with rich spatial features from tsc_assistant_updated.
+        Enhanced feature extraction with learning context
         """
-
-        # Get environment for carrying state (from updated version)
+        # Get environment for carrying state
         env = info.get("llm_env", None)
 
         # Use coordinate system from updated version
         obj_map = np.fliplr(obs['image'][:, :, 0])
         state_map = np.fliplr(obs['image'][:, :, 2])
 
-        # Agent carrying state (from updated version)
+        # Agent carrying state
         has_key = bool(getattr(env.unwrapped, "carrying", None)) if env else False
 
         def find(idx):
             locs = np.argwhere(obj_map == idx)
             return tuple(int(x) for x in locs[0]) if len(locs) else None
 
-        # Agent position (use updated version coordinates)
+        # Agent position
         agent_pos = (3, 0)
 
         # Find objects
@@ -81,7 +84,7 @@ class TSCAgentWithMediator:
         door_pos = find(OBJECT_TO_IDX["door"])
         goal_pos = find(OBJECT_TO_IDX["goal"])
 
-        # Door state (keep original mediator logic but enhance it)
+        # Door state
         door_state = None
         if door_pos:
             inv_state = {v: k for k, v in STATE_TO_IDX.items()}
@@ -95,7 +98,7 @@ class TSCAgentWithMediator:
         dist_to_door = manh(agent_pos, door_pos)
         dist_to_goal = manh(agent_pos, goal_pos)
 
-        # ADD: Enhanced spatial features from updated version
+        # Enhanced spatial features
         def get_vertical_distance(p, q):
             return abs(p[0] - q[0]) if (p and q) else None
 
@@ -107,11 +110,10 @@ class TSCAgentWithMediator:
         vertical_distance_to_key = get_vertical_distance(agent_pos, key_pos)
         horizontal_distance_to_key = get_horizontal_distance(agent_pos, key_pos)
 
-        # ADD: Relative directions from updated version
+        # Relative directions
         def rel_dir_agent_frame(agent_pos, q_pos):
             if not (agent_pos and q_pos):
                 return None
-            # Global vector
             dy, dx = q_pos[1] - agent_pos[1], q_pos[0] - agent_pos[0]
 
             if dx == 0:
@@ -127,7 +129,7 @@ class TSCAgentWithMediator:
         rel_dir_to_key = rel_dir_agent_frame(agent_pos, key_pos)
         rel_dir_to_door = rel_dir_agent_frame(agent_pos, door_pos)
 
-        # ADD: Enhanced environmental analysis from updated version
+        # Environmental analysis
         other_mask = (obj_map > OBJECT_TO_IDX["empty"]) & (obj_map != OBJECT_TO_IDX["agent"]) & (
                 obj_map != OBJECT_TO_IDX["wall"])
         other_locs = [tuple(loc) for loc in np.argwhere(other_mask)]
@@ -138,14 +140,14 @@ class TSCAgentWithMediator:
         grid_size = obs['image'].shape[:2]
         num_visible_objects = int(other_mask.sum())
 
-        # ADD: Object counts from updated version
+        # Object counts
         counts = {
             name: int((obj_map == idx).sum())
             for name, idx in OBJECT_TO_IDX.items()
             if name not in ("empty", "agent")
         }
 
-        # ADD: Path analysis from updated version
+        # Path analysis
         free_mask = (obj_map == OBJECT_TO_IDX["empty"])
         frees = 0
         if agent_pos:
@@ -156,13 +158,11 @@ class TSCAgentWithMediator:
                     frees += 1
         multiple_paths_open = frees >= 2
 
-        # ADD: Enhanced object detection from updated version
+        # Enhanced object detection
         def object_in_front(agent_pos: tuple, obj_map: np.ndarray):
             try:
-                # Compute the neighbor cell one step forward in global coords
                 yn = agent_pos[1] + 1
                 xn = agent_pos[0]
-                # Check facing
                 if 0 <= xn < obj_map.shape[0] and 0 <= yn < obj_map.shape[1]:
                     if obj_map[xn, yn] == OBJECT_TO_IDX["key"]:
                         return "key"
@@ -180,14 +180,14 @@ class TSCAgentWithMediator:
 
         front_object = object_in_front(agent_pos, obj_map)
 
-        # Adjacency (keep original)
+        # Adjacency
         def is_adjacent(p, q):
             return (p and q and manh(p, q) == 1)
 
         is_adj_key = is_adjacent(agent_pos, key_pos)
         is_adj_door = is_adjacent(agent_pos, door_pos)
 
-        # ENHANCED: Facing detection from updated version
+        # Facing detection
         def is_facing_object_agent_frame(agent_pos: tuple, obj_map: np.ndarray, obj_idx: int) -> bool:
             try:
                 yn = agent_pos[1] + 1
@@ -203,9 +203,9 @@ class TSCAgentWithMediator:
         is_facing_door = is_facing_object_agent_frame(agent_pos, obj_map, OBJECT_TO_IDX["door"])
         is_facing_wall = is_facing_object_agent_frame(agent_pos, obj_map, OBJECT_TO_IDX["wall"])
 
-        # Return ENHANCED feature dictionary (keeping all original + adding new ones)
+        # Return enhanced feature dictionary
         return {
-            # Original mediator features (unchanged)
+            # Original features
             "grid_size": grid_size,
             "agent_pos": agent_pos,
             "key_pos": key_pos,
@@ -223,7 +223,7 @@ class TSCAgentWithMediator:
             "facing_wall": is_facing_wall,
             "facing_door": is_facing_door,
 
-            # ADDED: Enhanced features from updated version
+            # Enhanced features
             "has_key": has_key,
             "dist_to_nearest_object": dist_to_nearest_object,
             "num_visible_objects": num_visible_objects,
@@ -235,12 +235,11 @@ class TSCAgentWithMediator:
             "rel_dir_to_door": rel_dir_to_door,
             "multiple_paths_open": multiple_paths_open,
             "front_object": front_object,
-            **counts  # Add object counts
+            **counts
         }
 
     def _get_situation_hash(self, features: Dict, rl_action: int) -> str:
-        """NEW: Create a hash of the current situation for loop detection"""
-        # Create a simplified situation signature
+        """Create a hash of the current situation for loop detection"""
         key_elements = [
             features.get('agent_pos'),
             features.get('key_pos'),
@@ -250,6 +249,29 @@ class TSCAgentWithMediator:
         ]
         return str(hash(tuple(str(x) for x in key_elements)))
 
+    def _get_learning_phase_context(self) -> Dict:
+        """Get context based on current learning phase"""
+        phase = self.mediator.learning_phase
+
+        if phase == "early_exploration":
+            return {
+                "learning_context": "Agent is in early learning phase. Provide clear, educational explanations for decisions.",
+                "decision_guidance": "Focus on teaching correct actions and explaining why certain moves are good or bad.",
+                "patience_note": "Be patient with repeated questions as the agent is learning basic concepts."
+            }
+        elif phase == "guided_learning":
+            return {
+                "learning_context": "Agent is developing decision-making skills. Provide reasoning but allow some exploration.",
+                "decision_guidance": "Balance between correcting clear mistakes and allowing learning opportunities.",
+                "patience_note": "Agent is becoming more capable but may still need guidance in complex situations."
+            }
+        else:  # autonomous
+            return {
+                "learning_context": "Agent is in autonomous mode. Only intervene when necessary.",
+                "decision_guidance": "Focus on efficiency and only override clearly problematic actions.",
+                "patience_note": "Agent should be making good decisions independently."
+            }
+
     def agent_run(self,
                   sim_step: int,
                   obs: Dict,
@@ -257,14 +279,14 @@ class TSCAgentWithMediator:
                   infos: Dict,
                   reward: Optional[float] = None,
                   use_learned_asking: bool = True) -> Tuple[int, bool, Dict]:
-        """FIXED: Better decision logic with ADVANCED LOOP DETECTION."""
+        """Enhanced decision logic with LEARNING-AWARE loop detection."""
 
         info = infos if isinstance(infos, dict) else infos[0]
 
-        # Extract ENHANCED features
+        # Extract enhanced features
         raw_feats = self.extract_features(obs, info)
 
-        # NEW: Situation-based loop detection
+        # Gradual situation-based loop detection
         current_situation = self._get_situation_hash(raw_feats, rl_action)
         if current_situation == self.last_situation_hash:
             self.same_situation_count += 1
@@ -272,41 +294,50 @@ class TSCAgentWithMediator:
             self.same_situation_count = 0
         self.last_situation_hash = current_situation
 
-        # NEW: Emergency circuit breaker - if same situation too long, force RL mode
-        if self.same_situation_count > 15:
+        # Learning-aware emergency circuit breaker
+        emergency_threshold = int(20 * self.learning_tolerance_multiplier)
+        if self.same_situation_count > emergency_threshold:
             if self.verbose:
                 logger.warning(
-                    f"🚨 EMERGENCY: Same situation {self.same_situation_count} times - forcing RL mode for 20 steps")
-            self.emergency_rl_mode = 20
+                    f"🚨 LEARNING-AWARE EMERGENCY: Same situation {self.same_situation_count} times - forcing RL mode for {emergency_threshold // 2} steps")
+            self.emergency_rl_mode = emergency_threshold // 2
             self.same_situation_count = 0
 
-        # NEW: Check emergency RL mode
+        # Check emergency RL mode
         if self.emergency_rl_mode > 0:
             self.emergency_rl_mode -= 1
             interaction_info = {
                 'asked_llm': False,
-                'ask_probability': 0.01,
+                'ask_probability': 0.05,
                 'llm_plan_changed': False,
                 'interaction_count': self.interaction_count,
                 'override_count': self.override_count,
-                'emergency_mode': True
+                'emergency_mode': True,
+                'learning_phase': self.mediator.learning_phase
             }
-            if self.verbose and self.emergency_rl_mode % 5 == 0:
-                logger.info(f"🚨 EMERGENCY RL MODE: {self.emergency_rl_mode} steps remaining")
+            if self.verbose and self.emergency_rl_mode % 10 == 0:
+                logger.info(f"🚨 Emergency RL mode: {self.emergency_rl_mode} steps remaining")
             return rl_action, False, interaction_info
 
-        # FIXED: Add performance-based asking adjustment
+        # Learning-aware performance adjustment
         recent_performance = self._get_recent_performance()
+        learning_phase = self.mediator.learning_phase
 
-        # Adjust asking probability based on recent performance
-        if recent_performance < 0.3 and len(self.recent_successes) > 10:
-            # If performing poorly, be more conservative with asking
-            asking_threshold_adjustment = 0.2
-        elif recent_performance > 0.8:
-            # If performing well, can be more selective
-            asking_threshold_adjustment = -0.1
-        else:
-            asking_threshold_adjustment = 0.0
+        # Adjust asking probability based on learning phase and performance
+        if learning_phase == "early_exploration":
+            asking_threshold_adjustment = -0.1  # More likely to ask during learning
+        elif learning_phase == "guided_learning":
+            if recent_performance < 0.3:
+                asking_threshold_adjustment = 0.1  # Less likely if struggling
+            else:
+                asking_threshold_adjustment = 0.0
+        else:  # autonomous
+            if recent_performance < 0.3:
+                asking_threshold_adjustment = 0.2
+            elif recent_performance > 0.8:
+                asking_threshold_adjustment = -0.1
+            else:
+                asking_threshold_adjustment = 0.0
 
         # Mediator decides whether to interrupt RL
         should_interrupt, interrupt_confidence = self.mediator.should_ask_llm(
@@ -315,13 +346,14 @@ class TSCAgentWithMediator:
             use_learned_policy=use_learned_asking
         )
 
-        # FIXED: Apply performance-based adjustment
+        # Apply learning-aware adjustment
         if asking_threshold_adjustment != 0.0:
-            if should_interrupt and interrupt_confidence < (0.6 + asking_threshold_adjustment):
+            adjusted_threshold = 0.6 + asking_threshold_adjustment
+            if should_interrupt and interrupt_confidence < adjusted_threshold:
                 should_interrupt = False
                 if self.verbose:
                     logger.info(
-                        f"Performance-based asking suppression: {interrupt_confidence:.3f} < {0.6 + asking_threshold_adjustment:.3f}")
+                        f"Learning-aware asking adjustment: {interrupt_confidence:.3f} < {adjusted_threshold:.3f}")
 
         interaction_info = {
             'asked_llm': should_interrupt,
@@ -329,24 +361,29 @@ class TSCAgentWithMediator:
             'llm_plan_changed': False,
             'interaction_count': self.interaction_count,
             'override_count': self.override_count,
-            'recent_performance': recent_performance,  # ADDED
-            'asking_adjustment': asking_threshold_adjustment,  # ADDED
+            'recent_performance': recent_performance,
+            'asking_adjustment': asking_threshold_adjustment,
             'emergency_mode': False,
-            'same_situation_count': self.same_situation_count  # NEW
+            'same_situation_count': self.same_situation_count,
+            'learning_phase': learning_phase
         }
 
         if should_interrupt:
             # LLM interrupts and provides guidance
-            llm_action, plan_changed = self._query_llm(raw_feats, rl_action, info)
+            llm_action, plan_changed = self._query_llm_with_learning_context(raw_feats, rl_action, info)
 
-            # NEW: Enhanced loop detection for LLM decisions
+            # Enhanced loop detection for LLM decisions
             if llm_action == self.last_llm_action and rl_action == self.last_rl_action:
                 self.consecutive_same_llm_decision += 1
-                if self.consecutive_same_llm_decision > 8:
+
+                # Learning-aware loop threshold
+                loop_threshold = 12 if learning_phase == "early_exploration" else 8
+
+                if self.consecutive_same_llm_decision > loop_threshold:
                     if self.verbose:
                         logger.warning(
-                            f"🔄 LLM LOOP DETECTED: Same decision {self.consecutive_same_llm_decision} times - forcing RL action")
-                    llm_action = rl_action  # Force RL action to break loop
+                            f"🔄 LLM decision loop detected: {self.consecutive_same_llm_decision} times - using RL action")
+                    llm_action = rl_action
                     plan_changed = False
                     self.llm_failure_count += 1
             else:
@@ -367,56 +404,72 @@ class TSCAgentWithMediator:
             else:
                 self.recent_overrides.append(0)
 
+            # Track interaction for learning
+            self.interaction_history.append({
+                'rl_action': rl_action,
+                'llm_action': llm_action,
+                'changed': plan_changed,
+                'learning_phase': learning_phase
+            })
+
         else:
             # Use RL action directly
             final_action = rl_action
             was_interrupted = False
-            # Reset consecutive counter when not asking
             self.consecutive_same_llm_decision = 0
 
         # Update mediator state
         self.mediator.update_state(obs)
 
-        # FIXED: Better logging with context
+        # Enhanced logging with learning context
         if self.verbose:
-            self._log_decision_enhanced(sim_step, rl_action, final_action, should_interrupt,
-                                        interrupt_confidence, was_interrupted,
-                                        interaction_info['llm_plan_changed'], raw_feats)
+            self._log_decision_with_learning_context(sim_step, rl_action, final_action, should_interrupt,
+                                                     interrupt_confidence, was_interrupted,
+                                                     interaction_info['llm_plan_changed'], raw_feats, learning_phase)
 
         return final_action, was_interrupted, interaction_info
 
-    def _query_llm(self, features: Dict, ppo_action: int, info: Dict) -> Tuple[int, bool]:
-        """FIXED: Enhanced LLM querying with better context and LOOP DETECTION."""
+    def _query_llm_with_learning_context(self, features: Dict, ppo_action: int, info: Dict) -> Tuple[int, bool]:
+        """Enhanced LLM querying with learning-aware context and prompts."""
 
-        # FIXED: Smarter forbidden action handling
+        # Handle forbidden actions
         if ppo_action in [4, 6]:
             return self._handle_forbidden_action(features, ppo_action)
 
         try:
-            # FIXED: Enhanced feature context for LLM
-            enhanced_context = self._create_enhanced_context(features, ppo_action)
+            # Create learning-aware context
+            enhanced_context = self._create_learning_aware_context(features, ppo_action)
+            learning_context = self._get_learning_phase_context()
+            enhanced_context.update(learning_context)
 
-            # NEW: Add loop detection context
+            # Add loop detection context
             if self.consecutive_same_llm_decision > 3:
                 enhanced_context[
                     "loop_warning"] = f"This override has been repeated {self.consecutive_same_llm_decision} times. Consider if RL action might be correct."
 
-            if self.same_situation_count > 5:
+            if self.same_situation_count > 8:
                 enhanced_context[
                     "situation_warning"] = f"Agent has been in similar situation for {self.same_situation_count} steps. Consider different approach."
 
+            # Add performance context
+            recent_performance = self._get_recent_performance()
+            if recent_performance < 0.3:
+                enhanced_context["performance_context"] = "Agent has been struggling recently. Provide clear guidance."
+            elif recent_performance > 0.7:
+                enhanced_context["performance_context"] = "Agent is performing well. Only intervene if necessary."
+
             # Translate to natural language
             translated_feats = translate_features_for_llm(features)
-            translated_feats.update(enhanced_context)  # Add enhanced context
+            translated_feats.update(enhanced_context)
 
-            # Generate prompt
+            # Generate enhanced prompt
             prompt = render_prompt(
                 env_name=info.get("env", "MiniGrid"),
                 features=translated_feats,
                 action=int(ppo_action)
             )
 
-            # Get LLM response with timeout protection
+            # Get LLM response
             try:
                 llm_response = self.llm.invoke(prompt)
                 txt = llm_response.content if hasattr(llm_response, 'content') else str(llm_response)
@@ -432,12 +485,12 @@ class TSCAgentWithMediator:
 
             llm_action = int(m.group(1))
 
-            # FIXED: Validate LLM action
+            # Validate LLM action
             if not self._is_valid_action(llm_action, features):
                 logger.warning(f"LLM chose invalid action {llm_action}, using fallback")
                 return self._fallback_action(features, ppo_action)
 
-            logger.info(f"🤖 LLM CHOSE: {llm_action} (was {ppo_action})")
+            logger.info(f"🤖 LLM CHOSE: {llm_action} (was {ppo_action}) [Phase: {self.mediator.learning_phase}]")
 
             plan_changed = (llm_action != ppo_action)
             return llm_action, plan_changed
@@ -447,10 +500,78 @@ class TSCAgentWithMediator:
             self.llm_failure_count += 1
             return self._fallback_action(features, ppo_action)
 
-    def _handle_forbidden_action(self, features: Dict, ppo_action: int) -> Tuple[int, bool]:
-        """FIXED: Smarter forbidden action handling with context awareness."""
+    def _create_learning_aware_context(self, features: Dict, ppo_action: int) -> Dict:
+        """Create enhanced context with learning awareness."""
 
-        logger.warning(f"PPO suggested forbidden action {ppo_action}")
+        context = {}
+
+        # Add decision confidence
+        context["ppo_confidence"] = "high" if ppo_action in [0, 1, 2] else "low"
+
+        # Add state assessment
+        has_key = features.get('has_key', False)
+        key_visible = features.get('is_key_visible', False)
+        door_visible = features.get('is_door_visible', False)
+
+        if has_key and door_visible:
+            context["current_objective"] = "Find and unlock the door"
+        elif key_visible and not has_key:
+            context["current_objective"] = "Navigate to and pick up the key"
+        elif not key_visible and not has_key:
+            context["current_objective"] = "Explore to find the key"
+        else:
+            context["current_objective"] = "Continue current plan"
+
+        # Add learning phase specific guidance
+        learning_phase = self.mediator.learning_phase
+
+        if learning_phase == "early_exploration":
+            context["learning_guidance"] = "Agent is learning. Provide educational explanations for decisions."
+            context["intervention_style"] = "Be more willing to correct and guide the agent's actions."
+        elif learning_phase == "guided_learning":
+            context["learning_guidance"] = "Agent is developing skills. Balance guidance with learning opportunities."
+            context["intervention_style"] = "Correct clear mistakes but allow some exploration."
+        else:  # autonomous
+            context["learning_guidance"] = "Agent is autonomous. Only intervene when necessary."
+            context["intervention_style"] = "Focus on efficiency and minimal necessary interventions."
+
+        # Add performance context
+        recent_perf = self._get_recent_performance()
+        if recent_perf < 0.3:
+            context["performance_note"] = "Agent struggling recently. Provide clear, helpful guidance."
+        elif recent_perf > 0.8:
+            context["performance_note"] = "Agent performing excellently. Current strategy is working well."
+        else:
+            context["performance_note"] = "Agent learning steadily. Make balanced decisions."
+
+        # Add interaction history context
+        if len(self.interaction_history) > 0:
+            recent_interactions = list(self.interaction_history)[-3:]
+            override_rate = sum(1 for i in recent_interactions if i['changed']) / len(recent_interactions)
+
+            if override_rate > 0.8:
+                context[
+                    "interaction_context"] = "You've been overriding frequently. Consider if RL actions might be acceptable."
+            elif override_rate < 0.2:
+                context["interaction_context"] = "You've been agreeing with RL mostly. Continue being selective."
+            else:
+                context["interaction_context"] = "Good balance of agreeing and overriding RL actions."
+        else:
+            context["interaction_context"] = "Continue making balanced decisions."
+
+        # Add loop prevention context
+        if self.llm_failure_count > 2:
+            context[
+                "failure_warning"] = f"LLM has had {self.llm_failure_count} recent issues. Consider simpler, safer actions."
+        else:
+            context["failure_warning"] = ""
+
+        return context
+
+    def _handle_forbidden_action(self, features: Dict, ppo_action: int) -> Tuple[int, bool]:
+        """Enhanced forbidden action handling with learning context."""
+
+        logger.warning(f"PPO suggested forbidden action {ppo_action} [Phase: {self.mediator.learning_phase}]")
 
         # Get current state
         has_key = features.get('has_key', False)
@@ -461,7 +582,7 @@ class TSCAgentWithMediator:
         front_object = features.get('front_object', 'empty')
         rel_dir_to_key = features.get('rel_dir_to_key')
 
-        # FIXED: Context-aware override decisions
+        # Context-aware override decisions
         if is_adjacent_to_key and facing_key and not has_key:
             logger.info("→ Perfect key pickup situation, using PICKUP (3)")
             return 3, True
@@ -495,10 +616,11 @@ class TSCAgentWithMediator:
             return 0.5  # Neutral
         return np.mean(self.recent_successes)
 
-    def _log_decision_enhanced(self, sim_step: int, rl_action: int, final_action: int,
-                               should_interrupt: bool, interrupt_confidence: float,
-                               was_interrupted: bool, llm_changed_plan: bool, features: Dict):
-        """FIXED: Enhanced logging with more context."""
+    def _log_decision_with_learning_context(self, sim_step: int, rl_action: int, final_action: int,
+                                            should_interrupt: bool, interrupt_confidence: float,
+                                            was_interrupted: bool, llm_changed_plan: bool, features: Dict,
+                                            learning_phase: str):
+        """Enhanced logging with learning context."""
 
         # Get current state for context
         has_key = features.get('has_key', False)
@@ -507,97 +629,24 @@ class TSCAgentWithMediator:
         agent_pos = features.get('agent_pos')
 
         state_str = f"Agent@{agent_pos}, Key@{key_pos}, Door@{door_pos}, HasKey={has_key}"
+        phase_str = f"[{learning_phase.upper()}]"
 
         if should_interrupt:
             if llm_changed_plan:
-                logger.info(f"[Step {sim_step}] 🛑 LLM OVERRIDE: "
+                logger.info(f"[Step {sim_step}] {phase_str} 🛑 LLM OVERRIDE: "
                             f"RL {rl_action} → LLM {final_action} "
                             f"(conf={interrupt_confidence:.2f}) | {state_str}")
             else:
-                logger.info(f"[Step {sim_step}] 🛑 LLM AGREED: "
+                logger.info(f"[Step {sim_step}] {phase_str} 🛑 LLM AGREED: "
                             f"RL {rl_action} confirmed "
                             f"(conf={interrupt_confidence:.2f}) | {state_str}")
         else:
-            logger.info(f"[Step {sim_step}] ✅ RL CONTINUES: "
+            logger.info(f"[Step {sim_step}] {phase_str} ✅ RL CONTINUES: "
                         f"Action {final_action} "
                         f"(conf={interrupt_confidence:.2f}) | {state_str}")
 
-    def get_mediator_stats(self) -> Dict:
-        """FIXED: Enhanced mediator statistics."""
-        base_stats = self.mediator.get_statistics()
-
-        # Add performance metrics
-        recent_override_rate = np.mean(self.recent_overrides) if self.recent_overrides else 0
-        recent_performance = self._get_recent_performance()
-
-        base_stats.update({
-            'total_interactions': self.interaction_count,
-            'total_overrides': self.override_count,
-            'override_rate': self.override_count / max(self.interaction_count, 1),
-            'recent_override_rate': recent_override_rate,
-            'recent_performance': recent_performance,
-            'interaction_efficiency': self.override_count / max(self.interaction_count, 1),
-            'performance_trend': 'improving' if recent_performance > 0.6 else 'declining' if recent_performance < 0.4 else 'stable',
-            # NEW: Loop detection stats
-            'emergency_rl_mode': self.emergency_rl_mode,
-            'consecutive_same_llm_decision': self.consecutive_same_llm_decision,
-            'same_situation_count': self.same_situation_count,
-            'llm_failure_count': self.llm_failure_count
-        })
-        return base_stats
-
-    def update_performance(self, success: bool):
-        """Update recent performance tracking."""
-        self.recent_successes.append(1 if success else 0)
-
-    def save_mediator(self, path: str):
-        """Save the trained mediator."""
-        self.mediator.save_asking_policy(path)
-
-    def load_mediator(self, path: str):
-        """Load a pre-trained mediator."""
-        self.mediator.load_asking_policy(path)
-
-    def _create_enhanced_context(self, features: Dict, ppo_action: int) -> Dict:
-        """FIXED: Create enhanced context for better LLM decisions."""
-
-        context = {}
-
-        # Add decision confidence
-        context["ppo_confidence"] = "high" if ppo_action in [0, 1, 2] else "low"
-
-        # Add state assessment
-        has_key = features.get('has_key', False)
-        key_visible = features.get('is_key_visible', False)
-        door_visible = features.get('is_door_visible', False)
-
-        if has_key and door_visible:
-            context["current_objective"] = "Find and unlock the door"
-        elif key_visible and not has_key:
-            context["current_objective"] = "Navigate to and pick up the key"
-        elif not key_visible and not has_key:
-            context["current_objective"] = "Explore to find the key"
-        else:
-            context["current_objective"] = "Continue current plan"
-
-        # Add recent performance context
-        recent_perf = self._get_recent_performance()
-        if recent_perf < 0.3:
-            context["performance_note"] = "Agent has been struggling recently, prefer safer actions"
-        elif recent_perf > 0.8:
-            context["performance_note"] = "Agent performing well, current strategy is working"
-        else:
-            context["performance_note"] = "Agent is learning, make balanced decisions"
-
-        # NEW: Add loop detection context
-        if self.llm_failure_count > 3:
-            context[
-                "failure_warning"] = f"LLM has failed {self.llm_failure_count} times recently. Consider simpler actions."
-
-        return context
-
     def _is_valid_action(self, action: int, features: Dict) -> bool:
-        """FIXED: Validate if LLM action makes sense in current context."""
+        """Validate if LLM action makes sense in current context."""
 
         # Always forbid actions 4 and 6
         if action in [4, 6]:
@@ -620,9 +669,9 @@ class TSCAgentWithMediator:
         return True
 
     def _fallback_action(self, features: Dict, original_action: int) -> Tuple[int, bool]:
-        """FIXED: Smart fallback action selection with loop awareness."""
+        """Learning-aware fallback action selection."""
 
-        # NEW: If we've been in fallback too many times, try original action
+        # If we've been in fallback too many times, try original action
         if self.llm_failure_count > 5 and self._is_valid_action(original_action, features):
             logger.info("→ Multiple LLM failures, trying original RL action")
             return original_action, False
@@ -631,13 +680,212 @@ class TSCAgentWithMediator:
         if self._is_valid_action(original_action, features):
             return original_action, False
 
-        # Otherwise, choose safe action based on state
+        # Choose safe action based on state and learning phase
         has_key = features.get('has_key', False)
         key_visible = features.get('is_key_visible', False)
         rel_dir_to_key = features.get('rel_dir_to_key')
 
-        if not has_key and key_visible and rel_dir_to_key:
-            if rel_dir_to_key == "left":
-                return 0, True  # Turn left
-            elif rel_dir_to_key == "right":
-                return 1, True  # Turn right
+        # Learning phase aware fallback
+        if self.mediator.learning_phase == "early_exploration":
+            # More conservative fallback during learning
+            if not has_key and key_visible and rel_dir_to_key:
+                if rel_dir_to_key == "left":
+                    return 0, True  # Turn left
+                elif rel_dir_to_key == "right":
+                    return 1, True  # Turn right
+                else:
+                    return 2, True  # Move forward
+            else:
+                return 0, True  # Safe default: turn left
+        else:
+            # Standard fallback for advanced phases
+            if not has_key and key_visible and rel_dir_to_key:
+                if rel_dir_to_key == "left":
+                    return 0, True
+                elif rel_dir_to_key == "right":
+                    return 1, True
+                else:
+                    return 2, True
+            else:
+                return 1, True  # Turn right for exploration
+
+    def _heuristic_asking_decision(self, obs: Dict, ppo_action: int) -> Tuple[bool, float]:
+        """Enhanced heuristic asking policy with learning awareness"""
+        action = int(ppo_action) if hasattr(ppo_action, '__iter__') else ppo_action
+
+        if self._is_critical_situation(obs, action):
+            return True, 0.9
+
+        if self._significant_obs_change(obs):
+            return True, 0.7
+
+        # Phase-aware periodic asking
+        learning_phase = self.mediator.learning_phase
+        if learning_phase == "early_exploration":
+            max_steps = 25
+        elif learning_phase == "guided_learning":
+            max_steps = 20
+        else:  # autonomous
+            max_steps = 18
+
+        if self.mediator.steps_since_last_ask >= max_steps:
+            return True, 0.6
+
+        return False, 0.3
+
+    def _significant_obs_change(self, obs: Dict) -> bool:
+        """Enhanced observation change detection"""
+        if self.mediator.previous_obs is None:
+            return True
+
+        current_features = self.extract_features(obs, {"llm_env": None})
+        previous_features = self.extract_features(self.mediator.previous_obs, {"llm_env": None})
+
+        # Important feature changes
+        important_changes = [
+            current_features.get('is_key_visible') != previous_features.get('is_key_visible'),
+            current_features.get('is_door_visible') != previous_features.get('is_door_visible'),
+            current_features.get('is_adjacent_to_key') != previous_features.get('is_adjacent_to_key'),
+            current_features.get('is_adjacent_to_door') != previous_features.get('is_adjacent_to_door'),
+            abs(current_features.get('dist_to_key', 999) - previous_features.get('dist_to_key', 999)) > 2,
+        ]
+
+        return any(important_changes)
+
+    def _is_critical_situation(self, obs: Dict, ppo_action: int) -> bool:
+        """Detect critical situations that always need LLM with learning awareness"""
+        action = int(ppo_action) if hasattr(ppo_action, '__iter__') else ppo_action
+
+        # Don't override if we're in learning mode emergency
+        if self.emergency_rl_mode > 0:
+            return False
+
+        # Check for problematic actions first
+        if self._is_problematic_action(obs, action):
+            return True
+
+        # Extract features for situation analysis
+        features = self.extract_features(obs, {"llm_env": None})
+
+        # Critical situations (but respect learning mode)
+        if features.get('is_adjacent_to_key') and not features.get('has_key', False) and action != 3:
+            return True
+
+        if features.get('facing_wall') and action == 2:
+            return True
+
+        if features.get('is_adjacent_to_door') and features.get('has_key', False) and action != 5:
+            return True
+
+        # Check if trying to go through closed door
+        if features.get('facing_door') and not features.get('door_is_open', False) and action == 2:
+            return True
+
+        # Been too long without asking (adjusted for learning phase)
+        learning_phase = self.mediator.learning_phase
+        if learning_phase == "early_exploration":
+            max_steps = 25
+        elif learning_phase == "guided_learning":
+            max_steps = 22
+        else:  # autonomous
+            max_steps = 18
+
+        if (self.mediator.steps_since_last_ask > max_steps and
+                self.mediator.position_stuck_count < 8):
+            return True
+
+        return False
+
+    def _is_problematic_action(self, obs: Dict, ppo_action: int) -> bool:
+        """Detect problematic actions that need LLM intervention with learning awareness"""
+        action = int(ppo_action) if hasattr(ppo_action, '__iter__') else ppo_action
+
+        # Invalid actions
+        if action in [4, 6]:  # Drop, Done (forbidden)
+            return True
+
+        # Don't ask if we're in emergency mode (learning from natural RL)
+        if self.emergency_rl_mode > 0:
+            return False
+
+        # Action loops (more lenient thresholds based on learning phase)
+        learning_phase = self.mediator.learning_phase
+        if learning_phase == "early_exploration":
+            loop_threshold = 8  # More tolerant during learning
+        elif learning_phase == "guided_learning":
+            loop_threshold = 6
+        else:  # autonomous
+            loop_threshold = 5
+
+        # Track recent actions (using mediator's deque)
+        if len(self.mediator.recent_actions) >= loop_threshold:
+            # Same action repeated many times
+            recent_actions = list(self.mediator.recent_actions)[-loop_threshold:]
+            if len(set(recent_actions)) == 1:
+                return True
+
+            # Oscillating between 2 actions
+            if loop_threshold >= 6:
+                last_6 = recent_actions[-6:]
+                if (len(set(last_6)) == 2 and
+                        last_6[0] == last_6[2] == last_6[4] and
+                        last_6[1] == last_6[3] == last_6[5]):
+                    return True
+
+        return False
+
+    def get_mediator_stats(self) -> Dict:
+        """Enhanced mediator statistics with learning context."""
+        base_stats = self.mediator.get_statistics()
+
+        # Add performance metrics
+        recent_override_rate = np.mean(self.recent_overrides) if self.recent_overrides else 0
+        recent_performance = self._get_recent_performance()
+
+        # Calculate learning progress metrics
+        learning_progress = {
+            'early_exploration': 0.33,
+            'guided_learning': 0.66,
+            'autonomous': 1.0
+        }.get(self.mediator.learning_phase, 0.0)
+
+        base_stats.update({
+            'total_interactions': self.interaction_count,
+            'total_overrides': self.override_count,
+            'override_rate': self.override_count / max(self.interaction_count, 1),
+            'recent_override_rate': recent_override_rate,
+            'recent_performance': recent_performance,
+            'interaction_efficiency': self.override_count / max(self.interaction_count, 1),
+            'performance_trend': 'improving' if recent_performance > 0.6 else 'declining' if recent_performance < 0.4 else 'stable',
+            'emergency_rl_mode': self.emergency_rl_mode,
+            'consecutive_same_llm_decision': self.consecutive_same_llm_decision,
+            'same_situation_count': self.same_situation_count,
+            'llm_failure_count': self.llm_failure_count,
+            'learning_progress': learning_progress,
+            'learning_tolerance_multiplier': self.learning_tolerance_multiplier,
+            'interaction_history_length': len(self.interaction_history)
+        })
+        return base_stats
+
+    def update_performance(self, success: bool):
+        """Update recent performance tracking with learning context."""
+        self.recent_successes.append(1 if success else 0)
+        self.performance_trend.append(success)
+
+        # Adjust learning tolerance based on performance trend
+        if len(self.performance_trend) >= 10:
+            recent_success_rate = np.mean(list(self.performance_trend)[-10:])
+            if recent_success_rate < 0.3:
+                # Struggling - increase tolerance
+                self.learning_tolerance_multiplier = min(3.0, self.learning_tolerance_multiplier * 1.1)
+            elif recent_success_rate > 0.7:
+                # Doing well - decrease tolerance gradually
+                self.learning_tolerance_multiplier = max(1.0, self.learning_tolerance_multiplier * 0.95)
+
+    def save_mediator(self, path: str):
+        """Save the trained mediator."""
+        self.mediator.save_asking_policy(path)
+
+    def load_mediator(self, path: str):
+        """Load a pre-trained mediator."""
+        self.mediator.load_asking_policy(path)
