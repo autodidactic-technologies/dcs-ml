@@ -3,23 +3,16 @@ torch>=2.1
 numpy~=2.0.2
 PyYAML~=6.0.2
 loguru~=0.7.3
-
-# SUMO-related
-traci==1.21.0
-libsumo==1.21.0
+tensorboard # DONE
 
 # RL Environment
-gym==0.26.2
 gymnasium~=1.1.1
-stable-baselines3~=2.6.0
+stable_baselines3 # DONE
 
-# LangChain + LLM
+# LangChain + LLM # DONE
 langchain>=0.1.17
 langchain-core>=0.1.35
 langchain-community>=0.0.30
 langchain-ollama>=0.1.0  # ⚠️ important for Ollama integration
-
-# Optional: if you're parsing outputs or using advanced prompts
-tqdm
 
 minigrid~=3.0.0

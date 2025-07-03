@@ -1,3 +1,0 @@
-LLM_PROVIDER: "ollama"
-LLM_MODEL: "llama3"
-LLM_TEMPERATURE: 0.0

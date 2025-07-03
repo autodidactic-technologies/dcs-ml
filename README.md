@@ -1,17 +1,7 @@
-    Notes
+    E-greedy RL-LLM Algorithm on MiniGrid
   
-	•	Tested with Python 3.9.
- 
-	•	Create a conda environment named llmrl.
- 
-	•	After cloning the repository, install all dependencies using requirements.txt.
- 
-	•	Make sure Ollama is installed on your system.
- 
-	•	Use the LLaMA 3.1 8B model locally via Ollama.
- 
-	•	SUMO should be correctly installed and accessible from the environment.
-                eg:  os.environ['SUMO_HOME'] = '/opt/miniconda3/envs/llmrl'
-	              os.environ['PATH'] = f"/opt/miniconda3/envs/llmrl/bin:{os.environ['PATH']}"
- 
-	•	You can run the simulation with a single command once setup is complete (rl_llm_tsc.py).
+	1. Determine total_timesteps in train_minigrid_ppo.py, then run train_minigrid_ppo.py 
+       to create PPO Agent on Minigrid.
+    2. Determine num_episodes in eval_rl_agent.py, then run eval_rl_agent.py to test trained PPO Agent.
+    3. Determine num_episodes and llm_frequency in rl_llm_test.py, then run rl_llm_test.py
+       to test E-greedy RL-LLM Algorithm on MiniGrid.
