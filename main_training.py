@@ -84,9 +84,83 @@ def setup_wandb(config: Config, experiment_type: str = "mediator"):
         return None
 
 
+def get_phase_info(episode: int, config: Config) -> Dict:
+    """
+    NEW: Get comprehensive phase information
+    """
+    exploration_episodes = config.exploration_episodes
+    max_episodes = config.max_episodes
+
+    if episode < exploration_episodes:
+        phase = "EXPLORATION"
+        progress = (episode / exploration_episodes) * 100
+        remaining = exploration_episodes - episode
+        phase_total = exploration_episodes
+        phase_current = episode
+    else:
+        phase = "EXPLOITATION"
+        exploit_episode = episode - exploration_episodes
+        max_exploit = max_episodes - exploration_episodes
+        progress = (exploit_episode / max_exploit) * 100 if max_exploit > 0 else 100
+        remaining = max_episodes - episode
+        phase_total = max_exploit
+        phase_current = exploit_episode
+
+    return {
+        'phase': phase,
+        'progress': progress,
+        'remaining': remaining,
+        'phase_current': phase_current,
+        'phase_total': phase_total,
+        'is_transition': episode == exploration_episodes
+    }
+
+
+def log_enhanced_progress(episode: int, result: Dict, config: Config, results: list):
+    """
+    NEW: Enhanced progress logging with phase information
+    """
+    if episode % config.log_every == 0:
+        phase_info = get_phase_info(episode, config)
+        recent_results = results[-10:] if len(results) >= 10 else results
+
+        # Calculate metrics
+        avg_env_reward = np.mean([r['env_reward'] for r in recent_results])
+        success_rate = np.mean([r['success'] for r in recent_results])
+        avg_interrupts = np.mean([r['interrupts'] for r in recent_results])
+        avg_efficiency = np.mean([r['efficiency'] for r in recent_results])
+
+        # Phase-specific metrics
+        phase_results = [r for r in results if r['phase'] == phase_info['phase']]
+        if phase_results:
+            phase_success = np.mean([r['success'] for r in phase_results])
+            phase_reward = np.mean([r['env_reward'] for r in phase_results])
+        else:
+            phase_success = 0
+            phase_reward = 0
+
+        # Create progress bar
+        bar_length = 20
+        filled_length = int(bar_length * phase_info['progress'] / 100)
+        bar = '█' * filled_length + '-' * (bar_length - filled_length)
+
+        print(f"\n📊 EPISODE {episode:4d} [{phase_info['phase']:11s}] Progress: {phase_info['progress']:5.1f}% |{bar}|")
+        print(
+            f"   Recent (10): Success={success_rate:.1%}, Reward={avg_env_reward:5.2f}, LLM={avg_interrupts:.1f}, Eff={avg_efficiency:.1%}")
+        print(
+            f"   Phase Stats: Success={phase_success:.1%}, Reward={phase_reward:5.2f} ({phase_info['phase_current']}/{phase_info['phase_total']})")
+        print(f"   Remaining: {phase_info['remaining']} episodes")
+
+        # Phase transition warning
+        if phase_info['remaining'] <= 10 and phase_info['phase'] == "EXPLORATION":
+            print("   ⚠️  APPROACHING EXPLOITATION PHASE!")
+        elif phase_info['remaining'] <= 10 and phase_info['phase'] == "EXPLOITATION":
+            print("   🏁 TRAINING ALMOST COMPLETE!")
+
+
 def calculate_aligned_mediator_reward(env_reward: float, was_interrupted: bool,
                                       plan_changed: bool, step: int, episode: int,
-                                      recent_performance: float = 0.5) -> float:
+                                      recent_performance: float = 0.5, config: Config = None) -> float:
     """
     SMART: Dynamic mediator reward calculation
 
@@ -153,16 +227,26 @@ def calculate_aligned_mediator_reward(env_reward: float, was_interrupted: bool,
         # Bonus for quick success
         step_efficiency = 0.05 * (30 - step) / 30
 
-    # 4. EPISODE PROGRESS: Learning phase adjustment
+    # 4. EPISODE PROGRESS: Learning phase adjustment (FIXED)
     learning_adjustment = 0.0
-    if episode < 25:
-        # Early learning - be more forgiving of exploration
+    exploration_episodes = config.exploration_episodes if config else 50
+
+    if episode < exploration_episodes * 0.5:  # Early exploration (first half)
+        # Be more forgiving of exploration and asking behavior
         if asking_modifier < 0:
-            learning_adjustment = abs(asking_modifier) * 0.3  # Reduce penalties
-    elif episode > 75:
-        # Late learning - expect efficiency
+            learning_adjustment = abs(asking_modifier) * 0.4  # Reduce penalties more
+        if was_interrupted:
+            learning_adjustment += 0.05  # Small bonus for exploration asking
+    elif episode < exploration_episodes:  # Late exploration
+        # Start to prefer more efficiency but still allow learning
+        if asking_modifier < 0:
+            learning_adjustment = abs(asking_modifier) * 0.2  # Reduce penalties less
+    else:  # Exploitation phase
+        # Expect efficiency and good decisions
         if asking_modifier > 0 and not was_interrupted:
-            learning_adjustment = asking_modifier * 0.2  # Bonus for efficiency
+            learning_adjustment = asking_modifier * 0.3  # Bonus for efficiency
+        elif was_interrupted and not plan_changed:
+            learning_adjustment = -0.05  # Penalty for unnecessary interrupts in exploitation
 
     # 5. COMBINE ALL FACTORS
     final_reward = base_reward + asking_modifier + step_efficiency + learning_adjustment
@@ -229,9 +313,10 @@ def run_ppo_only_episode(rl_agent, rl_env, episode: int, max_steps: int = 100):
     }
 
 
-def run_episode_flow(rl_agent, tsc_agent, rl_env, llm_env, episode: int, max_steps: int = 100, results: list = None):
+def run_episode_flow(rl_agent, tsc_agent, rl_env, llm_env, episode: int, max_steps: int = 100, results: list = None,
+                     config: Config = None):
     """
-    FIXED episode flow - Smart reward calculation
+    FIXED episode flow - Smart reward calculation with proper phase tracking
     """
     # Reset environments
     rl_obs, _ = rl_env.reset(seed=episode)
@@ -246,9 +331,34 @@ def run_episode_flow(rl_agent, tsc_agent, rl_env, llm_env, episode: int, max_ste
 
     llm_info["llm_env"] = llm_env
 
-    # Phase tracking
-    phase = "EXPLORATION" if episode < 50 else "EXPLOITATION"
-    logger.info(f"Episode {episode} START [Phase: {phase}]")
+    # FIXED: Phase tracking based on config
+    if config:
+        exploration_episodes = config.exploration_episodes
+    else:
+        exploration_episodes = 50  # Fallback only if config is None
+
+    phase = "EXPLORATION" if episode < exploration_episodes else "EXPLOITATION"
+
+    # Calculate progress percentages
+    if config:
+        if episode < exploration_episodes:
+            progress = (episode / exploration_episodes) * 100
+            remaining = exploration_episodes - episode
+            logger.info(
+                f"Episode {episode} START [Phase: {phase}] - Progress: {progress:.1f}% ({remaining} episodes to exploitation)")
+        else:
+            exploit_episode = episode - exploration_episodes
+            max_exploit = config.max_episodes - exploration_episodes
+            progress = (exploit_episode / max_exploit) * 100 if max_exploit > 0 else 100
+            remaining = config.max_episodes - episode
+            logger.info(
+                f"Episode {episode} START [Phase: {phase}] - Progress: {progress:.1f}% ({remaining} episodes remaining)")
+
+        # Phase transition detection
+        if episode == exploration_episodes:
+            logger.info("🔄 PHASE TRANSITION: Switching from EXPLORATION to EXPLOITATION")
+    else:
+        logger.info(f"Episode {episode} START [Phase: {phase}] - No config provided")
 
     while not done and sim_step < max_steps:
         sim_step += 1
@@ -298,14 +408,15 @@ def run_episode_flow(rl_agent, tsc_agent, rl_env, llm_env, episode: int, max_ste
             if len(results) >= 5:
                 recent_performance = np.mean([r['success'] for r in results[-5:]])
 
-            # SMART: Dynamic reward calculation
+            # SMART: Dynamic reward calculation (with config)
             mediator_reward = calculate_aligned_mediator_reward(
                 env_reward=env_reward,
                 was_interrupted=was_interrupted,
                 plan_changed=interaction_info.get('llm_plan_changed', False),
                 step=sim_step,
                 episode=episode,
-                recent_performance=recent_performance
+                recent_performance=recent_performance,
+                config=config  # Pass config for phase info
             )
 
             total_mediator_reward += mediator_reward
@@ -447,7 +558,8 @@ def run_comparison_experiment(config: Config, rl_agent, tsc_agent, rl_env, llm_e
                 rl_env=rl_env,
                 llm_env=llm_env,
                 episode=episode,
-                results=mediator_results
+                results=mediator_results,
+                config=config
             )
             mediator_results.append(result)
 
@@ -522,7 +634,7 @@ def run_comparison_experiment(config: Config, rl_agent, tsc_agent, rl_env, llm_e
 def main():
     """Main function with ENHANCED system including PPO baseline"""
 
-    print("🔧 ENHANCED MEDIATOR TRAINING SYSTEM")
+    print("🔧MEDIATOR TRAINING SYSTEM")
     print("✅ Environment-Mediator reward alignment")
     print("✅ Proper exploration-exploitation")
     print("✅ Clean WandB integration")
@@ -608,12 +720,29 @@ def main():
     )
     print("✅ TSC Agent initialized")
 
+    # Check for existing trained models
+    existing_models = []
+    model_paths = [
+        "checkpoints/mediator_final_3000ep.pt",
+        "checkpoints/mediator_final_quick_test.pt"
+    ]
+
+    for path in model_paths:
+        if os.path.exists(path):
+            existing_models.append(path)
+
+    if existing_models:
+        print(f"💾 Found {len(existing_models)} existing trained model(s):")
+        for model in existing_models:
+            print(f"   - {model}")
+        print("💡 You can use these for evaluation and comparison")
+
     # MAIN LOOP - Ana menüye geri dön
     while True:
         # Training menu
         print("\n📋 ENHANCED TRAINING OPTIONS:")
-        print("1. Quick Test")
-        print("2. Full Training")
+        print("1. Quick Test (20 episodes)")
+        print("2. Full Training (3000 episodes)")
         print("3. PPO-Only Baseline (no LLM)")
         print("4. Comparison Experiment (PPO vs Mediator)")
         print("5. Evaluation Only")
@@ -622,8 +751,8 @@ def main():
         choice = input("\nChoice (1-6): ").strip()
 
         if choice == "1":
-            config.max_episodes = 100
-            config.exploration_episodes = 50
+            config.max_episodes = 20
+            config.exploration_episodes = 10
             print("🚀 Quick test starting...")
 
             # Setup WandB
@@ -639,10 +768,14 @@ def main():
                         rl_env=rl_env,
                         llm_env=llm_env,
                         episode=episode,
-                        results=results
+                        results=results,
+                        config=config  # Pass config for phase tracking
                     )
                     results.append(result)
                     log_to_wandb(episode, result, config)
+
+                    # Enhanced progress logging
+                    log_enhanced_progress(episode, result, config, results)
                 except Exception as e:
                     logger.error(f"Episode {episode} failed: {e}")
                     continue
@@ -669,7 +802,8 @@ def main():
                         rl_env=rl_env,
                         llm_env=llm_env,
                         episode=episode,
-                        results=results
+                        results=results,
+                        config = config  # Pass config for phase tracking
                     )
                     results.append(result)
                     log_to_wandb(episode, result, config)
@@ -722,7 +856,7 @@ def main():
         elif choice == "4":
             print("🆚 Comparison Experiment starting...")
             original_episodes = config.max_episodes
-            config.max_episodes = min(config.max_episodes, 3000)  # Shorter for comparison
+            config.max_episodes = min(config.max_episodes, 50)  # Shorter for comparison
 
             comparison_results = run_comparison_experiment(config, rl_agent, tsc_agent, rl_env, llm_env)
             print("✅ Comparison experiment completed!")
@@ -739,7 +873,7 @@ def main():
             # Run evaluation
             results = []
             for episode in range(20):
-                result = run_episode_flow(rl_agent, tsc_agent, rl_env, llm_env, episode)
+                result = run_episode_flow(rl_agent, tsc_agent, rl_env, llm_env, episode, config=config)
                 results.append(result)
 
             # Results
