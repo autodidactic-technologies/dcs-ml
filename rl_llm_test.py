@@ -8,6 +8,7 @@ from langchain_core.runnables import RunnableLambda
 from MinigridAssistant.minigrid_assistant import MinigridAgent
 from utils.make_minigrid_env import make_env
 from stable_baselines3 import PPO
+import wandb
 
 # ====== Utility ======
 def get_device():
@@ -48,7 +49,19 @@ if __name__ == '__main__':
 
     all_rewards = []
     all_steps = []
-
+    wandb.init(
+        project="PPO_MiniGrid_Training",
+        entity="BILGEM_DCS_RL",
+        name=f"ppo_minigrid_doorkey_eval_rl_llm_{num_episodes}_episodes",
+        config={
+            "env_name": env_name,
+            "model_path": model_path,
+            "num_episodes": num_episodes,
+            "llm_model": llm_model_name,
+            "llm_frequency": llm_frequency
+        }
+    )
+    successes = []
     for episode in range(num_episodes):
         RL_obs, info_rl = rl_env.reset(seed=episode)
         LLM_obs, info_llm = llm_env.reset(seed=episode)
@@ -77,8 +90,23 @@ if __name__ == '__main__':
 
         all_rewards.append(total_reward)
         all_steps.append(sim_step)
+        is_success = total_reward > 0
+        successes.append(is_success)
+        cumulative_avg_success = np.mean(successes) * 100
         print(f"[Episode {episode+1}] Reward: {total_reward:.2f}, Steps: {sim_step}")
-
+        wandb.log({
+            "episode": episode + 1,
+            "episode_reward": total_reward,
+            "episode_steps": sim_step,
+            "cumulative_avg_success_rate": cumulative_avg_success
+        })
     llm_env.close()
     rl_env.close()
+    wandb.log({
+        "average_reward": np.mean(all_rewards),
+        "average_steps": np.mean(all_steps),
+        "success_rate": np.mean(successes) * 100
+    })
+    wandb.finish()
+
     print_summary(all_rewards, all_steps)

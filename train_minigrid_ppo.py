@@ -20,9 +20,10 @@ if __name__ == "__main__":
     wandb.init(
         project="PPO_MiniGrid_Training",
         entity="BILGEM_DCS_RL",
+        name=f"train_minigrid_doorkey_6x6_ppo",
         config={
             "env_name": "MiniGrid-DoorKey-6x6-v0",
-            "total_timesteps": 200_000,
+            "total_timesteps": 250_000,
             "algo": "PPO",
             "max_steps": 100
         },
@@ -33,7 +34,7 @@ if __name__ == "__main__":
 
     # Define model save path
     os.makedirs("models", exist_ok=True)
-    save_path = "models/ppo_minigrid_doorkey_6x6_29.06.2025.zip"
+    save_path = "models/ppo_minigrid_doorkey_6x6.zip"
     if hasattr(torch.backends, "mps") and torch.backends.mps.is_built() and torch.backends.mps.is_available():
         device = torch.device("mps")
     elif torch.backends.cuda.is_built() and torch.cuda.is_available():
@@ -63,7 +64,7 @@ if __name__ == "__main__":
     checkpoint_callback = CheckpointCallback(
         save_freq=50_000,
         save_path="./models/",
-        name_prefix="ppo_minigrid_doorkey_6x6_29.06.2025"
+        name_prefix="ppo_minigrid_doorkey_6x6"
     )
 
     # Train the model (
