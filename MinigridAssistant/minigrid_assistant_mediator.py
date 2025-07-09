@@ -4,15 +4,15 @@ from loguru import logger
 from typing import Dict, Tuple, Optional
 from collections import deque
 
-from TSCAssistant.tsc_agent_prompt import render_prompt
-from TSCAssistant.feature_translator import translate_features_for_llm
-from TSCAssistant.mediator import Mediator
+from MinigridAssistant.minigrid_agent_prompt import render_prompt
+from MinigridAssistant.feature_translator import translate_features_for_llm
+from MinigridAssistant.mediator import Mediator
 from minigrid.core.constants import OBJECT_TO_IDX, STATE_TO_IDX
 
 
-class TSCAgentWithMediator:
+class MiniGridAgentWithMediator:
     """
-    Simple TSC Agent with basic mediator integration.
+    Simple MiniGrid Agent with basic mediator integration.
     Karmaşık learning phases kaldırıldı - sadece basit exploration-exploitation.
     """
 

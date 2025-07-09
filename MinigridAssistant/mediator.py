@@ -377,5 +377,5 @@ class Mediator:
             'facing_key': is_facing_object(agent_pos, key_pos),
             'facing_door': is_facing_object(agent_pos, door_pos),
             'facing_wall': False,
-            'has_key': False,  # Will be overridden by TSC agent
+            'has_key': False,
         }

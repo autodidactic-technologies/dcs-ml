@@ -10,8 +10,8 @@ from langchain_ollama import ChatOllama
 from langchain_core.runnables import RunnableLambda
 from stable_baselines3 import PPO
 
-from TSCAssistant.tsc_assistant_mediator import TSCAgentWithMediator
-from utils.make_tsc_env import make_env
+from MinigridAssistant.minigrid_assistant_mediator import MiniGridAgentWithMediator
+from utils.make_minigrid_env import make_env
 
 
 def get_device():
@@ -795,7 +795,7 @@ def main():
         print("⚠️ RL agent not found, using random actions")
 
     # Initialize TSC Agent
-    tsc_agent = TSCAgentWithMediator(
+    tsc_agent = MiniGridAgentWithMediator(
         llm=llm,
         obs_shape=obs_shape,
         device=str(device),

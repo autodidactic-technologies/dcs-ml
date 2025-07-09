@@ -1,4 +1,4 @@
-# TSCAssistant/feature_translator.py
+# MinigridAssistant/feature_translator.py
 
 def translate_features_for_llm(features: dict) -> dict:
     """
