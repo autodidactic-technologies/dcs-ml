@@ -60,9 +60,9 @@ class Mediator:
         self.optimizer = torch.optim.Adam(self.asking_policy.parameters(), lr=learning_rate)
 
         # EXPLORATION-EXPLOITATION (Daha agresif)
-        self.exploration_episodes = 60  # Daha uzun exploration
+        self.exploration_episodes = 3  # Daha uzun exploration
         self.current_episode = 0
-        self.epsilon = 0.6  # 60% random exploration (was 30%)
+        self.epsilon = 0.8  # 60% random exploration (was 30%)
         self.min_epsilon = 0.15  # Daha yüksek minimum (was 5%)
         self.epsilon_decay = 0.985  # Daha yavaş decay (was 0.98)
 
