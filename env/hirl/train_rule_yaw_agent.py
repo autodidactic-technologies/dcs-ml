@@ -1,6 +1,6 @@
 import math
 
-from environments.HarfangEnv_GYM import HarfangEnv, HarfangSerpentineEnv, HarfangCircularEnv,HarfangSmoothZigzagEnemyEnv, HarfangDoctrineEnemyEnv, HarfangTacticalEnv
+from environments.HarfangEnv_GYM import HarfangEnv, SimpleEnemy
 import environments.dogfight_client as df
 import numpy as np
 import yaml
@@ -12,202 +12,7 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 import os
 
-class OnlyYawAgent:
-    def choose_action(self, state):
-        dy = state[1]
-        if dy > 0.01:
-            yaw_cmd = 1.0
-        elif dy < -0.01:
-            yaw_cmd = -1.0
-        else:
-            yaw_cmd = 0.0
-        return [0.0, 0.0, yaw_cmd, -1.0]
 
-class Straight_Agent:
-    def choose_action(self, state):
-        dx, dy, dz = state[0], state[1], state[2]
-        target_angle = state[6]
-        locked = state[7]
-        missile1_state = state[8]
-        pitch_cmd = 0.0
-        yaw_cmd = 0.0
-        roll_cmd = 0.0
-        if (locked > 0) and (missile1_state > 0) and (abs(target_angle) < 0.07):
-            fire_cmd = 1.0
-        else:
-            fire_cmd = -1.0
-        return [pitch_cmd, yaw_cmd, roll_cmd, fire_cmd]
-
-class CircularAgent_v1:
-    def choose_action(self, state):
-        dx_norm, dy_norm, dz_norm = state[0] , state[2] , state[1]
-        dx, dy, dz = state[0]*10000, state[2]*10000, state[1]*10000
-        plane_heading = state[19]
-        target_angle = state[6]
-
-        # 1. Angle to enemy in global frame (in degrees)
-        angle_to_enemy = np.degrees(np.arctan2(dx, dy))  # returns -180 to +180
-        print("angle to enemy:", angle_to_enemy)
-        print("plane heading:", plane_heading)
-        # 2. Relative bearing (enemy from your nose)
-        relative_bearing = angle_to_enemy - plane_heading
-
-        # 3. Normalize to [-180, 180]
-        relative_bearing = (relative_bearing + 180) % 360 - 180
-
-        print(f"Signed relative bearing: {relative_bearing:.1f} degrees")
-        if relative_bearing < 0:
-            print("Enemy is to the LEFT")
-        elif relative_bearing > 0:
-            print("Enemy is to the RIGHT")
-        else:
-            print("Enemy is dead ahead")
-
-        #time.sleep(1)
-        locked = state[7]
-        missile1_state = state[8]
-
-        #state[13]*10000
-        #state[14]*10000
-        z_=state[14]*10000
-
-        if z_ > 3800:
-            pitch_cmd = -0.0011
-        else:
-            pitch_cmd = np.clip(dy_norm * -0.015, -1.0, 1.0)
-
-        yaw_cmd = np.clip(dx_norm * -0.65, -1.0, 1.0)  # Sola/sağa takip
-        roll_cmd = 0.0  # Roll'a gerek yok
-        #and (abs(target_angle) < 0.07)
-        # Ateş et - basit koşul
-        if (locked > 0) and (missile1_state > 0) :
-            fire_cmd = 1.0
-        else:
-            fire_cmd = -1.0
-
-        return [pitch_cmd, roll_cmd, -yaw_cmd, fire_cmd]
-
-
-class CircularAgent_v2:
-    """
-    Takip, manevra, güvenlik ve ateş kararları ile geliştirilmiş Harfang3D agenti.
-    - Sol/sağ kararında relative bearing kullanır
-    - Roll, pitch, yaw'u gerçekçi şekilde koordine eder
-    - Yerden aşırı alçak ya da yüksek uçuşu önler
-    - Gerçekçi ateş kuralı içerir
-    """
-
-    def choose_action(self, state):
-        # --- Observation'dan değerleri çek ---
-        dx_norm, dy_norm, dz_norm = state[0], state[2], state[1]
-        dx, dy, dz = state[0]*10000, state[2]*10000, state[1]*10000
-        plane_heading = state[19]  # 0-360 derece
-        target_angle = state[6]
-        locked = state[7]
-        missile1_state = state[8]
-        altitude = state[14]*10000  # metrede
-        time.sleep(0.15)
-        # --- Relative bearing hesapla ---
-        angle_to_enemy = np.degrees(np.arctan2(dx, dy))  # -180,+180 arası
-        relative_bearing = angle_to_enemy - plane_heading
-        relative_bearing = (relative_bearing + 180) % 360 - 180  # [-180,180]
-
-        # --- Roll komutu: relative bearing ile (kanat yatırıp dön) ---
-        roll_cmd = 0
-
-        # --- Pitch komutu: yer/irtifa güvenliğiyle ---
-        if altitude < 1200:
-            pitch_cmd = 0.3   # Alçakta: tırman
-        elif altitude > 9000:
-            pitch_cmd = -0.3  # Çok yüksekte: dalış
-        else:
-            pitch_cmd = np.clip(dz_norm * -0.07, -0.8, 0.8)
-
-        # --- Yaw komutu: hafif düzeltme ---
-        yaw_cmd = np.clip(dx_norm * -0.6, -0.5, 0.5)
-
-        # --- Ateşleme kararı: iyi hizalanınca ve yakınsa ---
-        distance = np.sqrt(dx**2 + dy**2 + dz**2)
-        if (locked > 0) and (missile1_state > 0) and (abs(relative_bearing) < 45) and (distance < 2500):
-            fire_cmd = 1.0
-        else:
-            fire_cmd = -1.0
-
-        # --- Debug ---
-        print(f"altitude: {altitude:.0f} rel_bear: {relative_bearing:.1f} angle_to_enemy: {angle_to_enemy:.2f} dist: {distance:.0f} pitch: {pitch_cmd:.2f} roll: {roll_cmd:.2f}")
-
-        return [pitch_cmd, 0.0, -yaw_cmd, fire_cmd]
-
-class CircularAgent_v3:
-    def __init__(self):
-        self.fired = False  # Ateşlendi mi flag'i
-
-    def reset(self):
-        """Yeni episode/başlangıç için flag'i resetle."""
-        self.fired = False
-    def choose_action(self, state):
-        dx = state[0] * 10000
-        dy = state[2] * 10000
-        dz = state[1] * 10000
-        plane_heading = state[19]
-        locked = state[7]
-        missile1_state = state[8]
-        altitude = state[14]*10000
-        time.sleep(0.15)
-        # -- İleri yön vektörü (burun yönü) --
-        heading_rad = np.deg2rad(plane_heading)
-        vx = np.cos(heading_rad)
-        vy = np.sin(heading_rad)
-        v = np.array([vx, vy])
-
-        # -- Düşman vektörü --
-        r = np.array([dy, dx])
-
-        # -- Normalize et --
-        v_norm = v / (np.linalg.norm(v) + 1e-8)
-        r_norm = r / (np.linalg.norm(r) + 1e-8)
-
-        # -- Signed angle --
-        dot = np.dot(v_norm, r_norm)
-        cross = v_norm[0]*r_norm[1] - v_norm[1]*r_norm[0]
-        angle_rad = np.arctan2(cross, dot)  # ŞU AN: 0 tam karşı, +90 sağ, -90 sol
-        # Klasik tanımda, +sağ ve -sol istersen işaret değiştir
-        #angle_rad = -angle_rad
-
-        #print(f"Signed angle (deg): {np.degrees(angle_rad):.1f}")
-        #if abs(np.degrees(angle_rad)) < 5:
-            #print("Enemy is dead ahead")
-        #elif np.degrees(angle_rad) > 0:
-            #print("Enemy is to the RIGHT")
-        #else:
-            #print("Enemy is to the LEFT")
-
-        # Roll, pitch, yaw, fire komutlarını aşağıya istediğin gibi ekleyebilirsin.
-        roll_cmd = np.clip(angle_rad * 1.2, -1.0, 1.0)
-        # Eğer daha önce ateş ettiyse pitch sabit kalsın:
-
-         # Normal pitch hesabı:
-        if altitude < 1200:
-            pitch_cmd = -0.05
-        elif altitude > 4200:
-            pitch_cmd = 0.01
-        else:
-            pitch_cmd = np.clip(dz / 10000 * -0.08, -0.8, 0.8)
-        if self.fired:
-            yaw_cmd = 1
-        else:
-            yaw_cmd = np.clip(-dx/10000 * np.sign(np.degrees(angle_rad)) * -0.7, -0.65, 0.65)
-
-        distance = np.linalg.norm(r)
-        if (locked > 0) and (missile1_state > 0) :
-            fire_cmd = 1.0
-            self.fired = True  # Artık ateşlendi olarak işaretle
-        else:
-            fire_cmd = -1.0
-
-        #print(f"altitude: {altitude:.0f} signed_angle: {np.degrees(angle_rad):.1f} dist: {distance:.0f} roll: {roll_cmd:.2f}")
-
-        return [pitch_cmd, 0, -yaw_cmd, fire_cmd]
 
 class DataFlowTestAgent:
     def __init__(self, log_dir="dataflow_logs"):
@@ -283,6 +88,14 @@ class DataFlowTestAgent:
 
         print(f"\n[Episode {self.episode_id}] logged {len(self.episode_data)} steps to {self.log_path}")
 
+# TODO: More complex fire cmd, choose which missile to shoot (DONE)
+# TODO: Rule based agent and its test (Still Testing), add more commands and same(?) rule based agent for enemy
+# TODO: Missile types nasil olmali hepsi meteor mi olsa? Mavi takımda TFX içn AIM SL ve Meteor olabilir eşit sayılarda, kırmızı takımda Meteor ve Mica olabilir
+# TODO: General cleaning of code files etc.
+# TODO: Converting current harfang gym to stable_baselines compatible, action and state spaces must be correct.
+# TODO: Clean harfang system commit to repo
+# TODO: start RL testing
+
 class Agents:
     def track_cmd(self, state):
         # --- Extract values from observation ---
@@ -291,8 +104,7 @@ class Agents:
         plane_heading = state[19]             # Aircraft heading (degrees)
         altitude = state[14]*10000            # Aircraft altitude (meters)
         target_angle = state[6]
-
-        #time.sleep(0.025)
+        # time.sleep(0.5)
 
         # --- Compute relative bearing to target (in degrees, [-180, 180]) ---
         angle_to_enemy = np.degrees(np.arctan2(dx, dy))
@@ -347,21 +159,468 @@ class Agents:
 
         distance = np.sqrt(dx ** 2 + dy ** 2 + dz ** 2)
 
-        print(
-            f"pitch_to__target: {pitch_to_target:.1f}°, rel_pitch: {relative_pitch:.1f}°, xy_dist: {xy_dist:.1f}m, gain: {gain:.2f}, pitch_cmd: {pitch_cmd:.2f} plane pitch norm: {plane_pitch_norm:.2f} plane pitch: {plane_pitch:.2f} rel_bear: {relative_bearing:.1f}° |target_angle: {target_angle:.2f}| Yaw_cmd: {yaw_cmd:.2f}")
+        #print(f"pitch_to__target: {pitch_to_target:.1f}°, rel_pitch: {relative_pitch:.1f}°, xy_dist: {xy_dist:.1f}m, gain: {gain:.2f}, pitch_cmd: {pitch_cmd:.2f} plane pitch norm: {plane_pitch_norm:.2f} plane pitch: {plane_pitch:.2f} rel_bear: {relative_bearing:.1f}° |target_angle: {target_angle:.2f}| Yaw_cmd: {yaw_cmd:.2f}")
         return [pitch_cmd, roll_cmd, yaw_cmd, -1]
 
+    def evade_cmd(self, state):
+        """
+        Compute evasive controls (pitch, roll, yaw, throttle) against inbound missiles.
 
-    def evade_cmd(self, state, x1=0, y1=0, x2=0, y2=0):
-        pitch_cmd, yaw_cmd, fire_cmd = 0.0, 0.0, 0.0
+        Inputs
+        -------
+        state : sequence
+            Simulator observation vector. Assumes:
+            - Ownship pos: state[13:16] (x, y, z) in units of 1e-4 (scaled to meters)
+            - Ownship heading: state[19] in degrees
+            - Ownship altitude: state[14] * 1e4 in meters (fallback to ownship y)
+            - Missiles: state[21:] as dicts with keys:
+                { "missile_id": str, "position": [x, y, z] } (x,y,z in meters)
+              Entries with position [0,0,0] are considered non-existent.
 
-        return [pitch_cmd, 0, -yaw_cmd, fire_cmd]
-    def climb_cmd(self, state, x1=0, y1=0, x2=0, y2=0):
-        pitch_cmd, yaw_cmd, fire_cmd = 0.0, 0.0, 0.0
-        return [pitch_cmd, 0, -yaw_cmd, fire_cmd]
-    def fire_cmd(self, state, x1=0, y1=0, x2=0, y2=0):
-        pitch_cmd, yaw_cmd, fire_cmd = 0.0, 0.0, 0.0
-        return [pitch_cmd, 0, -yaw_cmd, fire_cmd]
+        Outputs
+        -------
+        list[float, float, float, float]
+            [pitch_cmd, roll_cmd, yaw_cmd, throttle_cmd]
+            Commands are clamped to [-1, 1]. Throttle is kept at -1 during evasion,
+            as in the original implementation.
+
+        Tactical rationale (high level)
+        -------------------------------
+        - LOS (line-of-sight) and range-closure based threat selection.
+        - PN-mirror style lateral acceleration demand (a_lat) as core guidance signal.
+        - Three engagement phases by time-to-go (t_go):
+            * Phase A (t_go > T1): go to beam (~±90° aspect) with moderate g.
+            * Phase B (T2 < t_go ≤ T1): weave/jink with randomized side bias.
+            * Phase C (t_go ≤ T2): hard break / last-ditch snap.
+        - Altitude guard enforces minimum climb demand near the floor.
+        - Lightweight IIR smoothing maintains real-time stability.
+
+        Notes
+        -----
+        * This refactor preserves all numerical behavior and thresholds.
+        * Internal state is maintained in self._ev (rng, low-pass memory, timing flags).
+        * No interface changes: identical inputs/outputs and same class attributes used.
+        """
+        import numpy as np
+        # ------------------------------ small utilities ------------------------------
+
+        def clamp(val: float, lo: float = -1.0, hi: float = 1.0) -> float:
+            """Clamp a value into [lo, hi]."""
+            return float(max(lo, min(hi, val)))
+
+        def wrap_deg(angle: float) -> float:
+            """Wrap angle in degrees into (-180, 180]."""
+            return (angle + 180.0) % 360.0 - 180.0
+
+        def fast_tanh(x: float) -> float:
+            """Alias to emphasize use as soft limiter."""
+            return float(np.tanh(x))
+
+        def get_dt() -> float:
+            """Simulator step; defaults to 0.15s if not present."""
+            return getattr(self, "dt", 0.15)
+
+        dt = max(1e-3, get_dt())  # Safety lower bound for divisions
+
+        # ------------------------------ persistent state -----------------------------
+        if not hasattr(self, "_ev"):
+            rng = np.random.RandomState(1234)
+            self._ev = {
+                "rng": rng,
+                "prev": {},  # per-missile previous { "range": ..., "az": ... }
+                "lp": np.array([0.0, 0.0, 0.0]),  # low-pass (pitch, roll, yaw)
+                "mid_until": 0.0,  # phase-B jink timing
+                "mid_dir": None,  # phase-B jink direction
+                "did_snap": False,  # phase-C one-time snap trigger
+                "snap_dir": 0.0,  # phase-C chosen snap direction
+            }
+        S = self._ev
+        rng = S["rng"]
+
+        # ------------------------------ ownship state -------------------------------
+        # Positions come scaled by 1e-4; convert to meters to match missile inputs
+        agent_pos = state[13:16] * 10000.0
+        heading = float(state[19])
+        try:
+            altitude = float(state[14] * 10000.0)
+        except Exception:
+            altitude = float(agent_pos[1])  # Fallback if altitude channel missing
+
+        # ------------------------------ missile parsing -----------------------------
+        # Ignore dummy missiles with [0,0,0] positions
+        missiles = [m for m in state[22:] if m.get("position") != [0.0, 0.0, 0.0]]
+
+        # If no threat exists, decay commands toward zero (keep -1 throttle as before)
+        if not missiles:
+            tau = 0.18
+            alpha = dt / (tau + dt)
+            cmd_vec = (1 - alpha) * S["lp"] + alpha * np.array([0.0, 0.0, 0.0])
+            S["lp"] = cmd_vec
+            return [float(cmd_vec[0]), float(cmd_vec[1]), float(cmd_vec[2]), 0.0]
+
+        # ------------------------------ threat metrics ------------------------------
+        def compute_missile_metrics(missile: dict, idx: int) -> dict:
+            """
+            Compute kinematics relative to ownship for a single missile.
+
+            Returns
+            -------
+            dict with keys:
+                id, range, closure, tgo, az, rb, dLOS
+            where:
+                - range : 3D slant range [m]
+                - closure : range rate (positive if closing) [m/s]
+                - tgo : time-to-go estimate [s]
+                - az : LOS azimuth wrt world (x→east, z→north) [deg]
+                - rb : relative bearing (missile az on ownship nose) in [-180,180] [deg]
+                - dLOS : LOS rate [deg/s]
+            """
+            mid = missile.get("missile_id", f"M{idx}")
+            mx, my, mz = map(float, missile["position"])
+
+            dx = mx - agent_pos[0]
+            dy = my - agent_pos[1]
+            dz = mz - agent_pos[2]
+
+            rng_3d = float(np.sqrt(dx * dx + dy * dy + dz * dz))  # total range
+
+            # Azimuth defined in x-z plane (air combat convention in this codebase)
+            az_world = np.degrees(np.arctan2(dx, dz))
+
+            prev = S["prev"].get(mid, {"range": rng_3d, "az": az_world})
+            closure = (prev["range"] - rng_3d) / dt  # positive if approaching
+            dlos = wrap_deg(az_world - prev["az"]) / dt
+            rbearing = wrap_deg(az_world - heading)
+
+            # Simple t_go (avoid divide-by-zero with 1e-3)
+            t_go = (rng_3d / max(closure, 1e-3)) if closure > 1e-3 else 1e9
+
+            S["prev"][mid] = {"range": rng_3d, "az": az_world}
+
+            return {
+                "id": mid,
+                "range": rng_3d,
+                "closure": closure,
+                "tgo": t_go,
+                "az": az_world,
+                "rb": rbearing,
+                "dLOS": dlos,
+            }
+
+        metrics_all = [compute_missile_metrics(m, i) for i, m in enumerate(missiles)]
+        ms = min(metrics_all, key=lambda k: k["tgo"])  # threat with minimal time-to-go
+
+        # ------------------------------ PN-mirror core -------------------------------
+        # Lateral acceleration demand used as proxy for evasive g
+        deg2rad = np.pi / 180.0
+        V_rel = max(ms["closure"], 180.0)  # min closure to keep authority
+        lamdot = abs(ms["dLOS"]) * deg2rad  # LOS rate [rad/s]
+        r = max(ms["range"], 200.0)  # min range for stability
+
+        g_cap = 8.0  # g limit reflected in pitch_cmd mapping
+        k1, k2 = 0.9, 0.6  # tuned as in original code
+        a_lat = k1 * V_rel * lamdot + k2 * (V_rel ** 2) / (r + 1.0)
+        a_lat = np.clip(a_lat, 3.0, g_cap)  # assure min evasive pull, cap at g_cap
+
+        # ------------------------------ phase selection ------------------------------
+        # Phase thresholds (unchanged)
+        T1, T2 = 7.0, 3.0
+        t_go = ms["tgo"]
+        rb = ms["rb"]
+        rb_sign = -1.0 if rb > 0.0 else 1.0  # positive rb → threat on right → turn left
+
+        # --- helper: steer yaw toward beam aspect (±90° relative bearing) -----------
+        def yaw_to_beam(rbearing: float, gain: float = 0.06, scale: float = 60.0) -> float:
+            """
+            Drive relative bearing toward ±90°. Returns yaw command in [-1, 1].
+            gain/scale maintain original shaping; do not alter to preserve behavior.
+            """
+            desired = 90.0 if rbearing >= 0.0 else -90.0
+            err = desired - rbearing
+            err_mag = abs(err)
+            dir_sign = -1.0 if rbearing > 0.0 else 1.0
+            return clamp(dir_sign * fast_tanh(gain * (err_mag / scale) * 60.0))
+
+        # --- helper: map yaw authority to bank command (keeps original feel) --------
+        def bank_cmd_from_yaw(yaw_cmd: float, mag: float = 1.1) -> float:
+            return clamp(fast_tanh(mag * np.sign(yaw_cmd)))
+
+        # --- helper: translate g demand to pitch command in [-1,1] ------------------
+        def g_to_pitch_cmd(g: float) -> float:
+            return clamp(g / g_cap)
+
+        yaw_cmd = roll_cmd = pitch_cmd = 0.0
+
+        # ------------------------------ rear-aspect special --------------------------
+        # When the missile is behind (>90°) and not in terminal (t_go > T2),
+        # prefer a sustained beaming with slightly higher g and strong roll.
+        rear_aspect = abs(rb) > 90.0 and t_go > T2
+        if rear_aspect:
+            desired_rb = 90.0 if rb >= 0.0 else -90.0
+            err = desired_rb - rb
+
+            yaw_cmd = clamp(fast_tanh((err / 35.0) * 1.6))
+            roll_cmd = clamp(fast_tanh(np.sign(yaw_cmd) * 1.3))
+            pitch_cmd = g_to_pitch_cmd(min(g_cap * 1.1, a_lat * 1.2))  # modestly higher g
+
+            # Altitude guard inside rear-aspect branch (unchanged)
+            if altitude < 1200.0:
+                pitch_cmd = max(pitch_cmd, g_to_pitch_cmd(5.0))
+
+            # Local smoothing for this branch (unchanged)
+            tau = 0.05
+            alpha = dt / (tau + dt)
+            vec = np.array([clamp(pitch_cmd), clamp(roll_cmd), clamp(yaw_cmd)])
+            smoothed = (1 - alpha) * S["lp"] + alpha * vec
+            S["lp"] = smoothed
+            P, R, Y = [float(clamp(c)) for c in smoothed.tolist()]
+            return [P, R, Y, -1.0]
+
+        # Reset snap bookkeeping when safely far from terminal
+        if t_go > 6.0:
+            S["did_snap"] = False
+            S["snap_dir"] = 0.0
+
+        # ------------------------------ phase A: far (t_go > T1) --------------------
+        if t_go > T1:
+            yaw_cmd = yaw_to_beam(rb, gain=0.045, scale=60.0) * 0.8
+            roll_cmd = bank_cmd_from_yaw(yaw_cmd, mag=1.0) * 0.85
+            pitch_cmd = g_to_pitch_cmd(min(a_lat, 4.0))
+
+        # ------------------------------ phase B: mid (T2 < t_go ≤ T1) ---------------
+        elif t_go > T2:
+            now_t = getattr(self, "_t", 0.0)
+            if (S["mid_dir"] is None) or (now_t >= S["mid_until"]):
+                # Keep original randomization policy (35% flip vs follow rb_sign)
+                S["mid_dir"] = (-rb_sign if rng.rand() < 0.35 else rb_sign)
+                S["mid_until"] = now_t + rng.uniform(0.6, 0.9)
+
+            yaw_cmd = S["mid_dir"] * abs(yaw_to_beam(rb, gain=0.06, scale=55.0))
+            roll_cmd = bank_cmd_from_yaw(yaw_cmd, mag=1.15)
+            pitch_cmd = g_to_pitch_cmd(min(a_lat, 6.5))
+
+        # ------------------------------ phase C: terminal (t_go ≤ T2) ---------------
+        else:
+            # One-time snap away from threat side when very close
+            if (t_go < 1.2) and (not S["did_snap"]):
+                S["did_snap"] = True
+                S["snap_dir"] = -rb_sign
+
+            snap_dir = S["snap_dir"] if S["did_snap"] else rb_sign
+
+            yaw_cmd = snap_dir * fast_tanh(0.14 * (min(140.0, abs(90.0 - rb)) / 40.0) * 60.0)
+            roll_cmd = clamp(fast_tanh(1.4 * np.sign(yaw_cmd)))
+            pitch_cmd = g_to_pitch_cmd(g_cap) * 1.2  # intentional slight over-command
+
+        # ------------------------------ altitude guard ------------------------------
+        ALT_FLOOR = 1200.0
+        if altitude < ALT_FLOOR:
+            # Enforce minimum pull-up demand; slightly damp roll near the floor
+            pitch_cmd = max(pitch_cmd, g_to_pitch_cmd(5.0))
+            roll_cmd *= 0.9
+
+        # ------------------------------ command smoothing ---------------------------
+        # Phase-aware time constant (unchanged piecewise policy)
+        tau = 0.06 if t_go < 2.0 else (0.10 if t_go < 5.0 else 0.18)
+        alpha = dt / (tau + dt)
+
+        vec = np.array([clamp(pitch_cmd), clamp(roll_cmd), clamp(yaw_cmd)])
+        smoothed = (1 - alpha) * S["lp"] + alpha * vec
+        S["lp"] = smoothed
+
+        P, R, Y = [float(clamp(c)) for c in smoothed.tolist()]
+        return [P, R, Y, -1.0]
+
+    def climb_cmd(self, state):
+        """
+        Simple climb:
+        - Altitude P-control
+        - Light pitch-attitude damping
+        - roll = yaw = 0
+        """
+        import math
+
+        # ------------- Debug controls (no behavior change) -------------
+        dbg_on = bool(getattr(self, "debug_climb", False))
+        dbg_every = int(getattr(self, "debug_climb_every", 10))
+        dt = float(getattr(self, "dt", 0.15)) or 0.15
+
+        if not hasattr(self, "_climb_dbg"):
+            self._climb_dbg = {
+                "step": 0,
+                "prev_alt": None,
+            }
+
+        D = self._climb_dbg
+        D["step"] += 1
+
+        def _dbg_print(**kw):
+            if not dbg_on:
+                return
+            if D["step"] % max(1, dbg_every) != 0:
+                return
+            # format a compact single-line log
+            msg = "[CLIMB DBG] " + " ".join(f"{k}={v}" for k, v in kw.items())
+            print(msg)
+
+        # ---------------- Parameters (YOUR ORIGINAL LOGIC) ----------------
+        target_alt_m = 4000.0
+        DEAD_BAND = 200.0
+
+        # P gains (alt_err > 0 => climb; negative command = nose-up)
+        Kp_up = 0.00005
+        Kp_down = 0.00012
+
+        # Small attitude damping (deg -> command)
+        Kd_att = 0.0015  # if pitch is positive (nose-up), push slightly down
+
+        # Limits (sign: negative = nose-up)
+        MAX_UP = 0.035
+        MAX_DOWN = 0.080
+
+        # ---------------- State ----------------
+        altitude = float(state[14] * 10000.0)  # meters
+        alt_err = target_alt_m - altitude  # + => need to climb
+        pitch_deg = float(state[21]*180)  # -90..90 (as provided by your sim)
+
+        # Estimate vertical speed for debug (does NOT affect control)
+        if D["prev_alt"] is None:
+            vz = 0.0
+        else:
+            vz = (altitude - D["prev_alt"]) / dt
+        D["prev_alt"] = altitude
+
+        # ---------------- Command (unchanged structure) ----------------
+        mode = "DEADBAND" if abs(alt_err) <= DEAD_BAND else ("CLIMB" if alt_err > 0 else "DESCENT")
+
+        # compute raw (pre-clamp) for debug
+        if abs(alt_err) <= DEAD_BAND:
+            pitch_raw_pre = Kd_att * pitch_deg
+        else:
+            if alt_err > 0:
+                pitch_raw_pre = -(Kp_up * alt_err) + Kd_att * pitch_deg
+            else:
+                pitch_raw_pre = -(Kp_down * alt_err) + Kd_att * pitch_deg
+
+        # Clamp (as in your original)
+        if pitch_raw_pre < -MAX_UP:
+            pitch_raw = -MAX_UP
+            sat = "SAT_UP"  # saturated nose-up
+        elif pitch_raw_pre > MAX_DOWN:
+            pitch_raw = MAX_DOWN
+            sat = "SAT_DOWN"  # saturated nose-down
+        else:
+            pitch_raw = pitch_raw_pre
+            sat = "OK"
+
+        # ---------------- Debug line ----------------
+        _dbg_print(
+            mode=mode,
+            alt=f"{altitude:.0f}m",
+            err=f"{alt_err:+.0f}m",
+            vz=f"{vz:+.1f}m/s",
+            pitch_deg=f"{pitch_deg:+.1f}°",
+            raw=f"{pitch_raw_pre:+.4f}",
+            cmd=f"{pitch_raw:+.4f}",
+            limits=f"[{-MAX_UP:.3f},{MAX_DOWN:.3f}]",
+            sat=sat,
+            dt=f"{dt:.2f}s",
+            step=D["step"],
+        )
+        #print(pitch_deg)
+        # ---------------- Outputs (unchanged) ----------------
+        roll_cmd = 0.0
+        yaw_cmd = 0.0
+        fire_cmd = -1.0
+        return [float(pitch_raw), roll_cmd, yaw_cmd, fire_cmd]
+
+    def fire_cmd_Meteor(self, state):
+        locked = state[7]
+        if locked > 0:
+            fire_cmd = 0
+        else:
+            fire_cmd = -1.0
+        return [0, 0, 0, fire_cmd]
+
+    def fire_cmd_AIM_SL(self, state):
+        locked = state[7]
+        if locked > 0:
+            fire_cmd = 1
+        else:
+            fire_cmd = -1.0
+        return [0, 0, 0, fire_cmd]
+
+    def enemys_track_cmd(self, state):
+        # --- Extract values from observation ---
+        dx, dy, dz = state[0] * 10000, state[2] * 10000, state[1] * 10000
+        dx_norm, dy_norm, dz_norm = state[0], state[2], state[1]
+        plane_heading = state[19]  # Aircraft heading (degrees)
+        altitude = state[14] * 10000  # Aircraft altitude (meters)
+        locked = state[7]
+        target_angle = state[6]
+        # time.sleep(0.5)
+
+        # --- Compute relative bearing to target (in degrees, [-180, 180]) ---
+        angle_to_enemy = np.degrees(np.arctan2(dx, dy))
+        relative_bearing = angle_to_enemy - plane_heading
+        relative_bearing = (relative_bearing + 180) % 360 - 180
+
+        # --- Pitch command (elevation safety check first) ---
+        if altitude < 1200:
+            # If altitude is very low, climb
+            pitch_cmd = -0.3
+        elif altitude > 8000:
+            # If altitude is very high, dive
+            pitch_cmd = 0.3
+        else:
+            # --- Aircraft pitch (normalized, then convert to degrees) ---
+            plane_pitch_norm = state[3]
+            plane_pitch = math.degrees(plane_pitch_norm * math.pi) * (-1)
+
+            # --- Compute required pitch to aim at target ---
+            horiz_dist = np.sqrt(dx ** 2 + dy ** 2)
+            pitch_to_target = np.degrees(np.arctan2(dz, horiz_dist))
+
+            # --- Relative pitch: required pitch minus current pitch ---
+            relative_pitch = pitch_to_target - plane_pitch
+            relative_pitch = (relative_pitch + 90) % 180 - 90  # Clamp to [-90, 90]
+
+            # --- Gain scaling based on distance (closer = more aggressive) ---
+            xy_dist = horiz_dist
+            gain = np.interp(xy_dist, [0, 800], [1.5, 1.1])
+
+            # --- Generate pitch command (closer = more aggressive correction) ---
+            if xy_dist < 800:
+                pitch_cmd = np.clip(-0.03 * relative_pitch * gain / 30, -1, 1)
+            else:
+                # Far: softer, proportional to dz
+                pitch_cmd = np.clip(dz_norm * -0.2, -1, 1)
+
+            # --- Extra adjustment if relative pitch is large ---
+            if abs(relative_pitch) > 0.5:
+                if relative_pitch > 0:
+                    pitch_cmd = -0.25
+                elif relative_pitch < 0:
+                    pitch_cmd = 0.25
+
+        # --- Roll command (no roll control here) ---
+        roll_cmd = 0.0
+
+        # --- Yaw command: turn nose toward the target ---
+        # More aggressive for larger angles
+        yaw_gain = 0.03 if abs(relative_bearing) < 10 else 0.06
+        yaw_cmd = np.clip(relative_bearing * yaw_gain, -1.0, 1.0)
+
+        distance = np.sqrt(dx ** 2 + dy ** 2 + dz ** 2)
+        if locked > 0:
+            fire_cmd = 1.0
+
+        else:
+            fire_cmd = -1.0
+
+        #print(f"pitch_to__target: {pitch_to_target:.1f}°, rel_pitch: {relative_pitch:.1f}°, xy_dist: {xy_dist:.1f}m, gain: {gain:.2f}, pitch_cmd: {pitch_cmd:.2f} plane pitch norm: {plane_pitch_norm:.2f} plane pitch: {plane_pitch:.2f} rel_bear: {relative_bearing:.1f}° |target_angle: {target_angle:.2f}| Yaw_cmd: {yaw_cmd:.2f}")
+        return [pitch_cmd, roll_cmd, yaw_cmd, fire_cmd]
+
 
 #agents = Agents()
 #state = []
@@ -384,85 +643,122 @@ def main(args):
     df.set_client_update_mode(True)
 
     # Environment selection
-    if args.env == "straight_line":
-        env = HarfangEnv()
-    elif args.env == "serpentine":
-        env = HarfangSerpentineEnv()
-    elif args.env == "circular":
-        env = HarfangCircularEnv()
-    elif args.env == "zigzag":
-        env = HarfangSmoothZigzagEnemyEnv()
-    elif args.env == "fight":
-        env = HarfangDoctrineEnemyEnv()
-    elif args.env == "fight2":
-        env = HarfangTacticalEnv()
+    if args.env == "simple_enemy":
+        env = SimpleEnemy()
     else:
         raise ValueError("Unknown env_type")
 
     # --- Agent selection ---
-    if args.agent == "yaw":
-        agent = OnlyYawAgent()
-    elif args.agent == "lead":
-        agent = Straight_Agent()
-    elif args.agent == "circ1":
-        agent = CircularAgent_v1()
-    elif args.agent == "circ2":
-        agent = CircularAgent_v2()
-    elif args.agent == "circ3":
-        agent = CircularAgent_v3()
-    elif args.agent == "data_test":
+    if args.agent == "data_test":
         agent = DataFlowTestAgent()
     elif args.agent == "agents":
         agent = Agents()
     else:
         raise ValueError("Unknown agent type")
 
-    scores, successes = [], []
+    scores, successes, evade_successes = [], [], []
 
-    # Trajectory görselleri için klasör oluştur
     os.makedirs("trajectories", exist_ok=True)
 
     for ep in range(args.episodes):
-        state = env.reset()
+        state, _ = env.reset()
+        _, oppo_state = env.reset()
         done = False
         total_reward, steps = 0, 0
-        max_steps = 100000
+        max_steps = 5000
 
         agent_positions = []
         oppo_positions = []
-
         rewards = []
         dones = []
-
-        #agent.reset()  # Her episode başında agent'ı sıfırla
 
         while steps < max_steps and not done:
             agent_pos = state[13:16] * 10000
             oppo_pos = state[16:19] * 10000
             agent_positions.append(agent_pos)
             oppo_positions.append(oppo_pos)
+
+            dx, dy, dz = state[0] * 10000, state[2] * 10000, state[1] * 10000
+            distance_to_enemy = np.sqrt(dx ** 2 + dy ** 2 + dz ** 2)
+
+            # RULE BASED AGENT FOR ALLY
+            if steps < 300:
+                args.command = "track"
+            elif steps > 300:
+                altitude = state[14] * 10000
+                if altitude < 1000:
+                    args.command = "climb"
+                else:
+                    args.command = "track"
+                    if distance_to_enemy < 5000:
+                        if distance_to_enemy < 1000 and state[7] == True:
+                            args.command = "fire_aim_sl"
+                        elif distance_to_enemy > 1000 and state[7] == True:
+                            args.command = "fire_meteor"
+            else:
+                threat_detected = any(
+                    m.get("position") != [0.0, 0.0, 0.0] for m in state[22:]
+                )
+                if threat_detected and distance_to_enemy < 8000:
+                    args.command = "evade"
+                else:
+                    args.command = "track"
+
+            # --- Ally action ---
             if args.command == "track":
                 action = agent.track_cmd(state)
-            elif args.agent == "evade":
+            elif args.command == "evade":
                 action = agent.evade_cmd(state)
+            elif args.command == "climb":
+                action = agent.climb_cmd(state)
+            elif args.command == "fire_meteor":
+                action = agent.fire_cmd_Meteor(state)
+            elif args.command == "fire_aim_sl":
+                action = agent.fire_cmd_AIM_SL(state)
 
-            out = env.step(action)
-            n_state, reward, done = out[:3]
+            # --- Enemy action (aynı komut kendi state'ine uygulanıyor) ---
+            if args.command == "track":
+                oppo_action = agent.enemys_track_cmd(oppo_state)
+            elif args.command == "evade":
+                oppo_action = agent.evade_cmd(oppo_state)
+            elif args.command == "climb":
+                oppo_action = agent.climb_cmd(oppo_state)
+            elif args.command == "fire_meteor":
+                oppo_action = agent.fire_cmd_Meteor(oppo_state)
+            elif args.command == "fire_aim_sl":
+                oppo_action = agent.fire_cmd_AIM_SL(oppo_state)
+
+            # NOT: alttaki override satırı kaldırıldı
+            # oppo_action = agent.enemys_track_cmd(oppo_state)
+
+            out = env.step(action, oppo_action)
+            n_state, reward, done, n_state_oppo = out[:4]
             state = n_state
+            oppo_state = n_state_oppo
+
             total_reward += reward
             rewards.append(reward)
             dones.append(done)
             steps += 1
 
+        if state[20] < 1.0:
+            evade_result = f"VURULDU ve Ally Health: {state[20]}"
+            evade_success = False
+        else:
+            evade_result = f"VURULMADI ve Ally Health: {state[20]}"
+            evade_success = True
+
         success = int(getattr(env, "episode_success", False))
         scores.append(total_reward)
         successes.append(success)
-        # Dataflow agent için log dosyasına kaydet
+        evade_successes.append(evade_success)
+
         if hasattr(agent, "log_episode"):
             agent.log_episode(rewards, dones)
-        print(f"Episode {ep + 1}/{args.episodes} | Reward: {total_reward:.1f} | Success: {success} | Steps: {steps}")
 
-        # ----------- 3D plot ve kaydetme bölümü -----------
+        print(f"Episode {ep + 1}/{args.episodes} | Reward: {total_reward:.1f} | Success: {success} | Steps: {steps} | Vurulma: {evade_result} ")
+
+        # 3D Trajectory plot
         agent_positions = np.array(agent_positions)
         oppo_positions = np.array(oppo_positions)
         fig = plt.figure()
@@ -482,18 +778,20 @@ def main(args):
 
     avg_reward = np.mean(scores)
     success_rate = np.mean(successes)
+    evade_success_rate = np.mean(evade_successes)
     print("\n=== Rule-Based Agent Results ===")
     print(f"Average Reward: {avg_reward:.2f}")
     print(f"Success Rate: {success_rate:.2%}")
+    print(f"Evade Success Rate: {evade_success_rate:.2%}")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--env', type=str, default='straight_line', choices=['straight_line', 'serpentine', 'circular','zigzag', 'fight', 'fight2'])
-    parser.add_argument('--agent', type=str, default='yaw', choices=['yaw', 'lead', 'circ1', 'circ2','circ3','data_test', 'agents'],
-                        help="Agent type: 'yaw' for OnlyYawAgent, 'lead' for LeadPursuitRuleAgent")
-    parser.add_argument('--port', type=int, default=12345)
+    parser.add_argument('--env', type=str, default='simple_enemy', choices=['simple_enemy'])
+    parser.add_argument('--agent', type=str, default='agents', choices=['agents'],
+                        help="Agent type: agents")
+    parser.add_argument('--port', type=int, default=50888)
     parser.add_argument('--episodes', type=int, default=30)
     parser.add_argument('--render', action='store_true')
-    parser.add_argument('--command', type=str, default='track', choices=['track','evade'])
     args = parser.parse_args()
     main(args)

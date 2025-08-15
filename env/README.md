@@ -16,8 +16,8 @@ Please follow [the official instructions](https://github.com/harfang3d/dogfight-
 ### Install HIRL
 
 ```bash
-conda create -n hirl python=3.8
-conda activate hirl
+conda create -n harfang_env python=3.8
+conda activate harfang_env
 git clone https://github.com/zrc0622/HIRL4UCAV.git
 cd HIRL4UCAV
 conda install pytorch==1.13.0 torchvision==0.14.0 torchaudio==0.13.0 pytorch-cuda=11.7 -c pytorch -c nvidia
@@ -34,7 +34,7 @@ Update the IP address in the `local_config.yaml` file.
 Once the prerequisites are set, you can run experiments using the following command:
 
 ```bash
-python hirl/train_all.py --port=<ENV_PORT> --env=<ENV_TYPE> --random --agent=HIRL --type=<HIRL_TYPE> --model_name=<MODEL_NAME>
+python harfang_env/train_all.py --port=<ENV_PORT> --env=<ENV_TYPE> --random --agent=HIRL --type=<HIRL_TYPE> --model_name=<MODEL_NAME>
 ```
 
 Replace placeholders with your specific setup.

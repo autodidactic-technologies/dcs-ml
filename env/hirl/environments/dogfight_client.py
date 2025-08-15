@@ -1,7 +1,7 @@
 # dogfight_client.py
 import json
 
-import hirl.environments.socket_lib as socket_lib
+import harfang_env.environments.socket_lib as socket_lib
 
 
 def connect(_host, _port):
@@ -369,12 +369,12 @@ def get_missile_launcher_state(machine_id):
 
 def get_missiles_list():
     socket_lib.send_message(str.encode(json.dumps({"command": "GET_MISSILESLIST", "args": {}})))
-    print("client side:")
+    #print("client side:")
     return json.loads((socket_lib.get_answer()).decode())
 
 
 def get_missile_state(missile_id):
-    # print("get_missile_state() client side == missile_id:", missile_id)
+    #print("get_missile_state() client side == missile_id:", missile_id)
     socket_lib.send_message(
         str.encode(json.dumps({"command": "GET_MISSILE_STATE", "args": {"missile_id": missile_id}})))
     state = json.loads((socket_lib.get_answer()).decode())
