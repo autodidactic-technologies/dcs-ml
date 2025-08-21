@@ -303,9 +303,9 @@ class HarfangEnv:
         df.reset_machine_matrix(self.Plane_ID_ally, 0, 3500, -4000, 0, 0, 0)
 
         df.set_plane_thrust(self.Plane_ID_ally, 1.0)
-        df.set_plane_thrust(self.Plane_ID_oppo, 0.6)
+        df.set_plane_thrust(self.Plane_ID_oppo, 1.0)
         df.set_plane_linear_speed(self.Plane_ID_ally, 300)
-        df.set_plane_linear_speed(self.Plane_ID_oppo, 200)
+        df.set_plane_linear_speed(self.Plane_ID_oppo, 300)
         df.retract_gear(self.Plane_ID_ally)
         df.retract_gear(self.Plane_ID_oppo)
 
@@ -440,6 +440,26 @@ class HarfangEnv:
 
         oppo_health = df.get_health(self.Plane_ID_oppo)
         oppo_hea = oppo_health['health_level']
+        self.ally_health = df.get_health(self.Plane_ID_ally)
+        ally_hea = self.ally_health['health_level']
+
+        # States = np.concatenate((
+        #     Pos_Diff,  # 0..2
+        #     Plane_Euler,  # 3..5
+        #     [target_angle],  # 6
+        #     [locked],  # 7
+        #     [missile1_state_val],  # 8
+        #     Oppo_Euler,  # 9..11
+        #     [oppo_hea],  # 12
+        #     Plane_Pos,  # 13..15
+        #     Oppo_Pos,  # 16..18
+        #     [Plane_Heading],  # 19
+        #     [ally_hea],  # 20
+        #     [Plane_Pitch_Att],  # 21
+        #     missile_vec  # 22..
+        # ), axis=None).astype(np.float32)
+
+
 
         States = np.concatenate((
             Pos_Diff,            # 0..2
@@ -452,7 +472,9 @@ class HarfangEnv:
             Plane_Pos,           # 13..15 (enemy self pos)
             Oppo_Pos,            # 16..18 (ally pos)
             [Plane_Heading],     # 19 (enemy heading)
-            missile_vec          # 20..
+            [ally_hea],
+            [Plane_Pitch_Att],   # 20
+            missile_vec          # 21..
         ), axis=None).astype(np.float32)
 
         self.oppo_state = States

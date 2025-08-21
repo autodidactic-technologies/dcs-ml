@@ -1,5 +1,7 @@
 import os
 import argparse
+import time
+
 import yaml
 import numpy as np
 import matplotlib.pyplot as plt
@@ -54,6 +56,7 @@ def main(args):
             # Rule-based actions
             action, ally_cmd = ally.behave()
             oppo_action, oppo_cmd = oppo.behave()
+            # time.sleep(0.1)
 
             # Step (gym-style 4-tuple)
             n_state, reward, done, info = env.step(action, oppo_action)

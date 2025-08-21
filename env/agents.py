@@ -58,6 +58,8 @@ class Ally(Agents):
         self.debug = bool(debug)
         self.steps_between_fires = int(steps_between_fires)
 
+    # DEPRECATED
+    # def RL_act():
     def behave(self):
         assert self.state is not None, "Call update(state) before behave()."
         s = self.state
@@ -66,6 +68,7 @@ class Ally(Agents):
         dx, dy, dz = s[0] * 10000.0, s[2] * 10000.0, s[1] * 10000.0
         distance_m = float(np.sqrt(dx * dx + dy * dy + dz * dz))
 
+        # TODO: s[14] -> state_dict.get("altitude")
         altitude_m = s[14] * 10000.0
         locked = bool(s[7] > 0)
 
@@ -90,20 +93,24 @@ class Ally(Agents):
                         command = "track"
 
         if self.debug:
-            print(f"[ALLY] step={self._step} dist={distance_m:.0f}m alt={altitude_m:.0f} lock={int(locked)} threat={threat_detected} -> {command}")
-
+            # print(f"[ALLY] step={self._step} dist={distance_m:.0f}m alt={altitude_m:.0f} lock={int(locked)} threat={threat_detected} -> {command}")
+            pass
+        command = "climb"
         # Map to action
         if command == "track":
             action = self.action_helper.track_cmd(s)
+
         elif command == "evade":
             action = self.action_helper.evade_cmd(s)
         elif command == "climb":
             action = self.action_helper.climb_cmd(s)
+            print("ALLY applying CLIMB")
         elif command == "fire":
             action = self.action_helper.fire_cmd(s)
         else: # DEFAULT action
             action = self.action_helper.track_cmd(s)
 
+        action = [0,0,0,0]
         self._step += 1
         return action, command
 
@@ -153,6 +160,7 @@ class Oppo(Agents):
             (distance_m < 4500.0)
              and ((self._step - self._last_fire_step) > self.fire_cooldown)
         )
+        # command = "climb"
         if can_fire:
             command = "fire"
         else:
@@ -176,22 +184,30 @@ class Oppo(Agents):
                     command = "evade"
                 else:
                     command = "climb" if altitude_m < 5000.0 else "track"
-
+        print("OPPO SELECTED COMMAND:", command)
         # komutu aksiyona çevir
         if command == "track":
-            action = self.action_helper.enemys_track_cmd(s)
+            action = self.action_helper.track_cmd(s)
+            print("OPPO APPLYING COMMAND:", command)
+            print(action)
         elif command == "evade":
             action = self.action_helper.evade_cmd(s)
+            print("OPPO APPLYING COMMAND:", command)
         elif command == "climb":
             action = self.action_helper.climb_cmd(s)
+            print("OPPO APPLYING COMMAND:", command)
         elif command == "fire":
             action = self.action_helper.fire_cmd(s)
             self._last_fire_step = self._step  # cooldown başlat
+            print("OPPO APPLYING COMMAND:", command)
         else: # DEFAULT action
-            action = self.action_helper.enemys_track_cmd(s)
+            action = self.action_helper.track_cmd(s)
+            command = "track"
+            print("OPPO APPLYING COMMAND:", command)
 
         if self.debug:
-            print(f"[OPPO] step={self._step} d={distance_m:.0f}m alt={altitude_m:.0f} lock={int(locked)} thr={int(threat)} -> {command} a={action}")
+            # print(f"[OPPO] step={self._step} d={distance_m:.0f}m alt={altitude_m:.0f} lock={int(locked)} thr={int(threat)} -> {command} a={action}")
+            pass
 
         self._step += 1
         return action, command

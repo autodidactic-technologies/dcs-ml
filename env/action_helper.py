@@ -261,65 +261,39 @@ class ActionHelper:
         return [P, R, Y, -1.0]
 
     def climb_cmd(self, state):
-        # Preserved logic and tunings
-        dbg_on = bool(getattr(self, "debug_climb", False))
-        dbg_every = int(getattr(self, "debug_climb_every", 10))
-        dt = float(getattr(self, "dt", 0.15)) or 0.15
+        """
+        Always climbs by default.
+        But if:
+        - altitude > 7000m → descend (nose down)
+        - pitch attitude is already too steep → counter-pitch to flatten
+        """
+        altitude = float(state[14] * 10000.0)  # meters
+        pitch_att = float(state[21] * 180.0)  # degrees (-90 to +90)
 
-        if not hasattr(self, "_climb_dbg"):
-            self._climb_dbg = {"step": 0, "prev_alt": None}
-        D = self._climb_dbg
-        D["step"] += 1
+        print(f"ALT: {altitude:.0f} m | PITCH: {pitch_att:.1f}°")
 
-        def _dbg_print(**kw):
-            if not dbg_on:
-                return
-            if D["step"] % max(1, dbg_every) != 0:
-                return
-            print("[CLIMB DBG] " + " ".join(f"{k}={v}" for k, v in kw.items()))
+        # Default: climb
+        pitch_cmd = -0.1  # nose up
 
-        target_alt_m = 4000.0
-        DEAD_BAND = 200.0
-        Kp_up = 0.00005
-        Kp_down = 0.00012
-        Kd_att = 0.0015
-        MAX_UP = 0.035
-        MAX_DOWN = 0.080
+        # Condition 1: too high → descend
+        if altitude > 7000:
+            pitch_cmd = 0.25  # nose down
 
-        altitude = float(state[14] * 10000.0)
-        alt_err = target_alt_m - altitude
-        pitch_deg = float(state[19] * 180)
+        # Condition 2: over-rotated → flatten
+        if pitch_att > 75:
+            pitch_cmd = 0.2  # nose down to flatten
+        elif pitch_att < -75:
+            pitch_cmd = -0.2  # nose up to flatten (too nose-down)
 
-        if D["prev_alt"] is None:
-            vz = 0.0
-        else:
-            vz = (altitude - D["prev_alt"]) / dt
-        D["prev_alt"] = altitude
-
-        if abs(alt_err) <= DEAD_BAND:
-            pitch_raw_pre = Kd_att * pitch_deg
-        else:
-            if alt_err > 0:
-                pitch_raw_pre = -(Kp_up * alt_err) + Kd_att * pitch_deg
-            else:
-                pitch_raw_pre = -(Kp_down * alt_err) + Kd_att * pitch_deg
-
-        if pitch_raw_pre < -MAX_UP:
-            pitch_raw = -MAX_UP; sat = "SAT_UP"
-        elif pitch_raw_pre > MAX_DOWN:
-            pitch_raw = MAX_DOWN; sat = "SAT_DOWN"
-        else:
-            pitch_raw = pitch_raw_pre; sat = "OK"
-
-        _dbg_print(alt=f"{altitude:.0f}m", err=f"{alt_err:+.0f}m", vz=f"{vz:+.1f}m/s",
-                   pitch_deg=f"{pitch_deg:+.1f}°", raw=f"{pitch_raw_pre:+.4f}",
-                   cmd=f"{pitch_raw:+.4f}", limits=f"[{-MAX_UP:.3f},{MAX_DOWN:.3f}]",
-                   sat=sat, dt=f"{dt:.2f}s", step=D['step'])
+        # Final safety clamp
+        MAX_PITCH = 0.32
+        pitch_cmd = max(min(pitch_cmd, MAX_PITCH), -MAX_PITCH)
 
         roll_cmd = 0.0
         yaw_cmd = 0.0
         fire_cmd = 0.0
-        return [float(pitch_raw), roll_cmd, yaw_cmd, fire_cmd]
+        return [pitch_cmd, roll_cmd, yaw_cmd, fire_cmd]
+
 
     def fire_cmd(self, state):
         locked = state[7]
@@ -360,4 +334,4 @@ class ActionHelper:
         yaw_gain = 0.03 if abs(relative_bearing) < 10 else 0.06
         yaw_cmd = np.clip(relative_bearing * yaw_gain, -1.0, 1.0)
         fire_cmd = 1.0 if locked > 0 else 0.0
-        return [float(pitch_cmd), float(roll_cmd), float(yaw_cmd), float(fire_cmd)]
+        return [float(pitch_cmd), float(roll_cmd), float(yaw_cmd), float(0)]

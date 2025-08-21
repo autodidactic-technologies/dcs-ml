@@ -1,4 +1,59 @@
 [**ENGLISH**](README.md) | [**中文**](assets/README_CN.md)
+
+
+# TODO: More complex fire cmd, choose which missile to shoot (DONE)
+# TODO: Rule based agent and its test (Still Testing), add more commands and same(?) rule based agent for enemy
+# TODO: Missile types nasil olmali hepsi meteor mi olsa? Mavi takımda TFX içn AIM SL ve Meteor olabilir eşit sayılarda, kırmızı takımda Meteor ve Mica olabilir
+# TODO: General cleaning of code files etc.
+# TODO: Converting current harfang gym to stable_baselines compatible, action and state spaces must be correct.
+# TODO: Clean harfang system commit to repo
+# TODO: start RL testing
+
+
+# TODO: not Agents, ActionHelper
+
+# class Agents
+# self.state = state
+# self.team = "ally" or "oppo"
+# def behave(self, state)
+# def update(self, state)
+#  self.state = state
+# Agents -> Ally, Oppo
+# Ally behave() very simple tactics
+#   if self.state[4] == 0:
+# Oppo behave() bit more complex tactics
+# ally_action = ally.behave(ally.state) , "fire"
+# oppo_action = oppo.behave(oppo.state), "track"
+
+
+
+# obs, reward, done, oppo_state, success = env.step(action, oppo_action)
+# env.step(action)
+# def play_oppo(self)
+# def step(self, action):
+#  if oppo_is_enabled:
+#       self.play_oppo()
+
+# obs, reward, done, info = env.step(action)
+# obs = [int float, no dict]
+# reward = single number, int or float
+# done True or False boolean
+# info can be a dict
+# dict = {"ally_state": {},  "oppo_state": {}}
+# oppo_state = info["oppo_state"]
+# oppo.update(oppo_state)
+
+# STATE REFACTOR: {}
+# {"speed": 0, "heading": 44, "missile_threat": 1, RELATIVEBEARING: 34.67, "missile_wreck"..........}
+# what was the index of relative bearing? state[24] or state[25] ?
+# placeholders.py RELATIVEBEARING = "relative_bearing_ally"
+
+# vectorizer(dict)
+# state_list.append(dict["heading"])
+# state_list.append(dict["speed"])
+# return obs
+
+
 ## Useful commands
 ```bash
  python env/hirl/train_rule_yaw_agent.py --env simple_enemy --agent agents --port 50888 --episodes 10 --render  
