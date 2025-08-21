@@ -177,7 +177,7 @@ class HarfangEnv():
             # print("fire")
         else:
             self.now_missile_state = False
-        
+
         df.update_scene()
 
     def _get_termination(self):
@@ -320,7 +320,8 @@ class HarfangEnv():
         # 相对位置（3），我机欧拉角（3），锁敌角，是否锁敌，导弹状态，敌机欧拉角（3），敌机血量
 
         # self.now_missile_state = False # 未来的状态均不发射（不能加，因为后续计算奖励函数需要）
-
+        # print("Ally States length:", len(States))
+        # print("Ally States:", States)
         return States
 
     def _get_enemy_observation(self):
@@ -400,6 +401,8 @@ class HarfangEnv():
         ), axis=None)
         # missile_vec = state[20]
         States = np.concatenate((States, missile_vec))
+        # print("Oppo States length:", len(States))
+        # print("Oppo States:", States)
         return States
 
     def get_enemy_missile_vector(self):
@@ -526,7 +529,6 @@ class HarfangEnv():
             done = True
         return done
 
-# []
 class MissileHandler:
     MISSILE_TYPES = ["AIM_SL", "Meteor", "Karaoke", "Mica", "S400", "Sidewinder"]
 
@@ -653,8 +655,6 @@ class MissileHandler:
         print("Ally slot state:", self.missile_slot_status(self.ally_id))
         print("Enemy slot state:", self.missile_slot_status(self.enemy_id))
 
-
-
 class SimpleEnemy(HarfangEnv):
     """
     Minimal air combat simulation for testing evade behavior.
@@ -731,15 +731,25 @@ class SimpleEnemy(HarfangEnv):
 
         # Ateş edilmemişler (pozisyon 0,0,0) → sadece missile_id
         oppo_unfired_missiles = [
-            m['missile_id'] for m in ally_missile_list
+            m['missile_id'] for m in oppo_missile_list
             if m['position'] == [0.0, 0.0, 0.0]
         ]
 
         # Ateş edilmişler (pozisyonu 0,0,0 olmayanlar) → sadece missile_id
         oppo_fired_missiles = [
-            m['missile_id'] for m in ally_missile_list
+            m['missile_id'] for m in oppo_missile_list
             if m['position'] != [0.0, 0.0, 0.0]
         ]
+
+        # Ally Ateşleme mantığı: en küçük slot numarasındaki füzeyi seç
+        if float(action_ally[3]) > 0 and ally_unfired_missiles:
+            # missile_id formatı: "ennemy_2-<type>-<slot>"
+            ally_slots = [
+                int(m.split('-')[-1]) for m in ally_unfired_missiles
+            ]
+            slot = min(ally_slots)
+            df.fire_missile(self.Plane_ID_ally, slot)
+            print(" === ally fired missile! ===")
 
         # Enemy Ateşleme mantığı: en küçük slot numarasındaki füzeyi seç
         if float(action_enemy[3]) > 0 and oppo_unfired_missiles:
@@ -782,6 +792,5 @@ class SimpleEnemy(HarfangEnv):
             'distance_to_ally': distance,
             'missile_fired': self.has_fired
         }
-
 
 

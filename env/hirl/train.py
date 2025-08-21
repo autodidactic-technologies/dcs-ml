@@ -96,6 +96,50 @@ class DataFlowTestAgent:
 # TODO: Clean harfang system commit to repo
 # TODO: start RL testing
 
+
+# TODO: not Agents, ActionHelper
+
+# class Agents
+# self.state = state
+# self.team = "ally" or "oppo"
+# def behave(self, state)
+# def update(self, state)
+#  self.state = state
+# Agents -> Ally, Oppo
+# Ally behave() very simple tactics
+#   if self.state[4] == 0:
+# Oppo behave() bit more complex tactics
+# ally_action = ally.behave(ally.state) , "fire"
+# oppo_action = oppo.behave(oppo.state), "track"
+
+
+
+# obs, reward, done, oppo_state, success = env.step(action, oppo_action)
+# env.step(action)
+# def play_oppo(self)
+# def step(self, action):
+#  if oppo_is_enabled:
+#       self.play_oppo()
+
+# obs, reward, done, info = env.step(action)
+# obs = [int float, no dict]
+# reward = single number, int or float
+# done True or False boolean
+# info can be a dict
+# dict = {"ally_state": {},  "oppo_state": {}}
+# oppo_state = info["oppo_state"]
+# oppo.update(oppo_state)
+
+# {}
+# {"speed": 0, "heading": 44, "missile_threat": 1, RELATIVEBEARING: 34.67, "missile_wreck"..........}
+# what was the index of relative bearing? state[24] or state[25] ?
+# placeholders.py RELATIVEBEARING = "relative_bearing_ally"
+
+# vectorizer(dict)
+# state_list.append(dict["heading"])
+# state_list.append(dict["speed"])
+# return obs
+
 class Agents:
     def track_cmd(self, state):
         # --- Extract values from observation ---
@@ -481,7 +525,9 @@ class Agents:
         # ---------------- State ----------------
         altitude = float(state[14] * 10000.0)  # meters
         alt_err = target_alt_m - altitude  # + => need to climb
-        pitch_deg = float(state[21]*180)  # -90..90 (as provided by your sim)
+        # print(state)
+        # print(state[21])
+        pitch_deg = float(state[19]*180)  # -90..90 (as provided by your sim)
 
         # Estimate vertical speed for debug (does NOT affect control)
         if D["prev_alt"] is None:
@@ -531,7 +577,7 @@ class Agents:
         # ---------------- Outputs (unchanged) ----------------
         roll_cmd = 0.0
         yaw_cmd = 0.0
-        fire_cmd = -1.0
+        fire_cmd = 0
         return [float(pitch_raw), roll_cmd, yaw_cmd, fire_cmd]
 
     # def fire_cmd_Meteor(self, state):
@@ -616,7 +662,7 @@ class Agents:
             fire_cmd = 1.0
 
         else:
-            fire_cmd = -1.0
+            fire_cmd = 0
 
         #print(f"pitch_to__target: {pitch_to_target:.1f}°, rel_pitch: {relative_pitch:.1f}°, xy_dist: {xy_dist:.1f}m, gain: {gain:.2f}, pitch_cmd: {pitch_cmd:.2f} plane pitch norm: {plane_pitch_norm:.2f} plane pitch: {plane_pitch:.2f} rel_bear: {relative_bearing:.1f}° |target_angle: {target_angle:.2f}| Yaw_cmd: {yaw_cmd:.2f}")
         return [pitch_cmd, roll_cmd, yaw_cmd, fire_cmd]
@@ -634,6 +680,9 @@ class Agents:
 def main(args):
     import os
 
+    # ally = Ally()
+    # oppo = Oppo()
+
     current_path = os.getcwd()
     print(current_path)
     with open('env/local_config.yaml', 'r') as file:
@@ -649,8 +698,8 @@ def main(args):
     # Environment selection
     if args.env == "simple_enemy":
         env = SimpleEnemy()
-    else:
-        raise ValueError("Unknown env_type")
+    elif args.env == "harfang":
+        env = HarfangEnv()
 
     # --- Agent selection ---
     if args.agent == "data_test":
@@ -675,8 +724,18 @@ def main(args):
         oppo_positions = []
         rewards = []
         dones = []
+        fired_step = 0
 
         while steps < max_steps and not done:
+            # ally.update(state)
+            # oppo.update(oppo_state)
+            #
+            # ally.behave()
+            # oppo.behave()
+            # # # # #  # # # # #  # # # # #  # # # # #  # # # # # # # # # #  # # # # #  # # # # #  # # # # #  # # # # # # # # # #  # # # # #  # # # # #  # # # #
+            # # # # #  # # # # #  # # # # #  # # # # #  # # # # # # # # # #  RULE BASED ALLY  # # # # #  # # # # #  # # # # # # # # # #  # # # # #  # # # # #  # # # #
+            # # # # #  # # # # #  # # # # #  # # # # #  # # # # # # # # # #  # # # # #  # # # # #  # # # # #  # # # # # # # # # #  # # # # #  # # # # #  # # # #
+            # RULE BASED AGENT FOR ALLY
             agent_pos = state[13:16] * 10000
             oppo_pos = state[16:19] * 10000
             agent_positions.append(agent_pos)
@@ -685,29 +744,36 @@ def main(args):
             dx, dy, dz = state[0] * 10000, state[2] * 10000, state[1] * 10000
             distance_to_enemy = np.sqrt(dx ** 2 + dy ** 2 + dz ** 2)
 
-            # RULE BASED AGENT FOR ALLY
+            # # # # behaviour diversity   # # # #  # # # #
+            print("steps:", steps)
             if steps < 300:
                 args.command = "track"
             elif steps > 300:
                 altitude = state[14] * 10000
                 if altitude < 1000:
-                    args.command = "climb"
+                    # args.command = "climb"
+                    args.command = "track"
                 else:
                     args.command = "track"
-                    if distance_to_enemy < 5000:
-                        if distance_to_enemy < 1000 and state[7] == True:
-                            args.command = "fire"
-                        # elif distance_to_enemy > 1000 and state[7] == True:
-                        #     args.command = "fire_meteor"
-            else:
-                threat_detected = any(
-                    m.get("position") != [0.0, 0.0, 0.0] for m in state[22:]
-                )
-                if threat_detected and distance_to_enemy < 8000:
-                    args.command = "evade"
-                else:
-                    args.command = "track"
-
+                    # if distance_to_enemy < 5000:
+                    print("distance to enemy:",distance_to_enemy)
+                    print("state[7]:", state[7])
+                    if distance_to_enemy < 3000 and state[7] == True and (steps - fired_step) > 600:
+                        args.command = "fire"
+                        fired_step = steps
+                        print("ALLY rule: fire selected")
+                    # elif distance_to_enemy > 1000 and state[7] == True:
+                    #     args.command = "fire_meteor"
+            # else:
+            threat_detected = any(
+                m.get("position") != [0.0, 0.0, 0.0] for m in state[22:]
+            )
+            if threat_detected and distance_to_enemy < 8000:
+                args.command = "evade"
+            elif args.command != "fire":
+                args.command = "track"
+            # # # #  # # # #  # # # #  # # # #  # # # #  # # # #
+            print("ALLY: final selected:", args.command)
             # --- Ally action ---
             if args.command == "track":
                 action = agent.track_cmd(state)
@@ -717,8 +783,66 @@ def main(args):
                 action = agent.climb_cmd(state)
             elif args.command == "fire":
                 action = agent.fire_cmd(state)
+                print("ALLY: fire command selected ")
+
+            ally_command = args.command
+
             # elif args.command == "fire_aim_sl":
             #     action = agent.fire_cmd_AIM_SL(state)
+
+            # # # # #  # # # # #  # # # # #  # # # # #  # # # # # # # # # #  # # # # #  # # # # #  # # # # #  # # # # # # # # # #  # # # # #  # # # # #  # # # #
+            # # # # #  # # # # #  # # # # #  # # # # #  # # # # # # # # # #  RULE BASED OPPO  # # # # #  # # # # #  # # # # # # # # # #  # # # # #  # # # # #  # # # #
+            # # # # #  # # # # #  # # # # #  # # # # #  # # # # # # # # # #  # # # # #  # # # # #  # # # # #  # # # # # # # # # #  # # # # #  # # # # #  # # # #
+            # TODO: we need an algorithm for oppo in right here
+            #
+            # --- Opponent (Oppo) Behaviour: Strategic & Aggressive ---
+
+            # Define engagement phases
+            if steps < 200:
+                phase = "approach"
+            elif 200 <= steps < 500:
+                phase = "engage"
+            else:
+                phase = "maintain"
+
+            altitude = state[14] * 10000
+            threat_detected = any(m.get("position") != [0.0, 0.0, 0.0] for m in state[22:])
+            distance_ok_for_fire = (distance_to_enemy < 4500 and state[7] is True)
+
+            # --- Phase Logic ---
+            if phase == "approach":
+                # Close distance while gaining altitude advantage
+                if altitude < 4000:
+                    args.command = "climb"
+                else:
+                    args.command = "track"
+
+            elif phase == "engage":
+                if threat_detected and distance_to_enemy < 9000:
+                    # Evade if under threat and close to enemy
+                    args.command = "evade"
+                elif distance_ok_for_fire:
+                    # Fire when in optimal range
+                    args.command = "fire"
+                else:
+                    # Try to get into firing position
+                    if altitude < 3500:
+                        args.command = "climb"
+                    else:
+                        args.command = "track"
+
+            elif phase == "maintain":
+                if threat_detected:
+                    # Play defensive if enemy still has missiles
+                    args.command = "evade"
+                elif distance_ok_for_fire:
+                    args.command = "fire"
+                else:
+                    # Keep positional advantage — gain altitude if possible
+                    if altitude < 5000:
+                        args.command = "climb"
+                    else:
+                        args.command = "track"
 
             # --- Enemy action (aynı komut kendi state'ine uygulanıyor) ---
             if args.command == "track":
@@ -791,7 +915,7 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--env', type=str, default='simple_enemy', choices=['simple_enemy'])
+    parser.add_argument('--env', type=str, default='simple_enemy', choices=['simple_enemy', 'harfang'])
     parser.add_argument('--agent', type=str, default='agents', choices=['agents'],
                         help="Agent type: agents")
     parser.add_argument('--port', type=int, default=50888)
