@@ -1,0 +1,19 @@
+{
+  "trajectory_id": "bvr_missile_shot_1755785362_5164",
+  "maneuver_type": "bvr_missile_shot",
+  "success": true,
+  "final_reward": 50.0,
+  "tactical_quality_score": 0.6356844028592548,
+  "total_steps": 10,
+  "duration": 0.00013589859008789062,
+  "initial_conditions": {
+    "distance": 12000,
+    "locked": true
+  },
+  "key_decision_points": [
+    3,
+    4,
+    9
+  ],
+  "failure_analysis": null
+}
