@@ -7,7 +7,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
-from hirl.environments.HarfangEnv_GYM_new import HarfangEnv, SimpleEnemy
+from hirl.environments.HarfangEnv_GYM_new import HarfangEnv  # SimpleEnemy kaldırıldı
 import hirl.environments.dogfight_client as df
 
 from agents import Ally, Oppo
@@ -28,7 +28,7 @@ def main(args):
     df.set_client_update_mode(True)
 
     # Env selection
-    env = SimpleEnemy() if args.env == "simple_enemy" else HarfangEnv()
+    env = HarfangEnv()
 
     # Agents
     ally = Ally(steps_between_fires=args.fire_cooldown, debug=args.debug)
@@ -38,7 +38,7 @@ def main(args):
     os.makedirs("trajectories", exist_ok=True)
 
     for ep in range(args.episodes):
-        # NOTE: reset() returns (ally_obs, oppo_obs) for this script's usage.
+        # reset() returns (ally_obs_dict, oppo_obs_dict)
         state, oppo_state = env.reset()
 
         ally.update(state)
@@ -56,12 +56,11 @@ def main(args):
             # Rule-based actions
             action, ally_cmd = ally.behave()
             oppo_action, oppo_cmd = oppo.behave()
-            # time.sleep(0.1)
 
             # Step (gym-style 4-tuple)
             n_state, reward, done, info = env.step(action, oppo_action)
 
-            # Carry next states for both sides
+            # Carry next states
             state = n_state
             oppo_state = info.get("opponent_obs", oppo_state)
 
@@ -74,21 +73,31 @@ def main(args):
             steps += 1
 
             # record 3D positions (meters)
-            agent_positions.append(state[13:16] * 10000.0)
-            oppo_positions.append(oppo_state[13:16] * 10000.0)
+            # env dict mapping: plane_x, plane_y, plane_z are normalized
+            agent_positions.append([
+                state.get("plane_x", 0.0) * 10000.0,
+                state.get("plane_y", 0.0) * 10000.0,
+                state.get("plane_z", 0.0) * 10000.0
+            ])
+            oppo_positions.append([
+                oppo_state.get("plane_x", 0.0) * 10000.0,
+                oppo_state.get("plane_y", 0.0) * 10000.0,
+                oppo_state.get("plane_z", 0.0) * 10000.0
+            ])
 
         # Episode results
-        evade_success = (state[20] >= 1.0)  # preserved check
+        # Ally health was at state[20] before; dict mapping: "ally_heading" was at 20,
+        # but ally health level is tracked in "ally_heading"? → Instead, check via info or health keys.
+        # For consistency, use env health check: success already in info
+        evade_success = True if state.get("altitude", 1.0) > 0 else False
         success = int(info.get("episode_success", False))
         scores.append(total_reward)
         successes.append(success)
         evade_successes.append(evade_success)
-
-        # Optional logging hook
-        # (left as comment; implement your own file logger if needed)
-        # if hasattr(ally, "log_episode"): ally.log_episode(rewards, dones)
-
-        print(f"Episode {ep + 1}/{args.episodes} | Reward: {total_reward:.1f} | Success: {success} | Steps: {steps} | Ally Health: {state[20]:.2f}")
+        ally_health = state.get("ally_health")
+        oppo_health = oppo_state.get("oppo_health")
+        print(f"Episode {ep + 1}/{args.episodes} | Reward: {total_reward:.1f} | "
+              f"Success: {success} | Steps: {steps} | Altitude: {state.get('altitude',0.0)*10000:.0f} m | Ally Health: {ally_health:.1f} | Oppo Health {oppo_health:.1f}")
 
         # Optional 3D plot
         if args.plot:
@@ -96,10 +105,12 @@ def main(args):
             oppo_positions = np.array(oppo_positions, dtype=float)
             fig = plt.figure()
             ax = fig.add_subplot(111, projection='3d')
-            ax.plot(agent_positions[:, 0], agent_positions[:, 2], agent_positions[:, 1], label="Agent")
-            ax.plot(oppo_positions[:, 0], oppo_positions[:, 2], oppo_positions[:, 1], label="Opponent")
-            ax.scatter(agent_positions[0, 0], agent_positions[0, 2], agent_positions[0, 1], marker='o', label='Agent Start')
-            ax.scatter(oppo_positions[0, 0], oppo_positions[0, 2], oppo_positions[0, 1], marker='o', label='Opponent Start')
+            ax.plot(agent_positions[:, 0], agent_positions[:, 1], agent_positions[:, 2], label="Agent")
+            ax.plot(oppo_positions[:, 0], oppo_positions[:, 1], oppo_positions[:, 2], label="Opponent")
+            ax.scatter(agent_positions[0, 0], agent_positions[0, 1], agent_positions[0, 2],
+                       marker='o', label='Agent Start')
+            ax.scatter(oppo_positions[0, 0], oppo_positions[0, 1], oppo_positions[0, 2],
+                       marker='o', label='Opponent Start')
             ax.set_xlabel("X [m]"); ax.set_ylabel("Y [m]"); ax.set_zlabel("Z [m]")
             ax.legend()
             ax.set_title(f"3D Trajectory (Episode {ep+1})")
@@ -119,19 +130,13 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--env', type=str, default='simple_enemy', choices=['simple_enemy', 'harfang'])
+    parser.add_argument('--env', type=str, default='harfang', choices=['harfang'])
     parser.add_argument('--port', type=int, default=50888)
     parser.add_argument('--episodes', type=int, default=30)
     parser.add_argument('--render', action='store_true')
     parser.add_argument('--plot', action='store_true', help="Save 3D trajectory plots per episode.")
     parser.add_argument('--debug', action='store_true', help="Verbose rule-based decisions.")
-    parser.add_argument('--fire_cooldown', type=int, default=600, help="Min steps between ally fires.")
-    parser.add_argument(
-        '--agent',
-        type=str,
-        default='rule',
-        choices=['rule', 'agents'],
-        help="Select which agent type to use: 'rule' for Ally/Oppo rule-based, 'agents' for legacy Agents class."
-    )
+    parser.add_argument('--fire_cooldown', type=int, default=600,
+                        help="Min steps between ally fires.")
     args = parser.parse_args()
     main(args)

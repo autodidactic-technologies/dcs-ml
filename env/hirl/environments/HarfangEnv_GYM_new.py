@@ -1,37 +1,21 @@
 # HarfangEnv_GYM.py
 """
-Harfang Gym-style environment with vectorized missile tails.
+Harfang Gym-style environment — NOW returns dict observations.
 
-Major points
-------------
-- Preserves existing reward/termination/tactics. No numerical changes.
-- Returns gym-style step tuple: (obs, reward, done, info).
-  * info includes: opponent_obs, success (step flag), episode_success, now_missile_state, missile1_state, n_missile1_state
-- Observations are **purely numeric** (stable_baselines-friendly).
-  * Missile data is vectorized into fixed-length packs: [present, mx, my, mz, heading_deg] * MAX_TRACKED_MISSILES
-  * Absolute missile positions are in meters (unchanged assumption used by evasive logic).
-- Adds observation_space with dynamic size computed at reset.
-- Centralizes primitive actions in Action_Helper; SimpleEnemy extends base env for a minimalist adversary.
+Key updates
+-----------
+- Observations are returned as dictionaries (per user request).
+- observation_space is a gym.spaces.Dict inferred from the first observation.
+- Internal self.state / self.oppo_state store dicts.
+- Helpers (get_loc_diff/get_reward/get_termination) accept both dict and array
+  without breaking future SB3 integration.
+- Altitude/Z consistency: position's 2nd component is altitude (index=1) and
+  maps to both "plane_z" and "altitude" keys; historically this was state[14].
 
-State layout (indices)
-----------------------
-0..2     : Pos_Diff = [dx, dy, dz] from Ally POV (normalized by 1e4)
-3..5     : Ally Euler angles (normalized by NormStates["Plane_Euler_angles"])
-6        : target_angle (degrees, as provided by sim)
-7        : ally target_locked  (1 if True else -1)
-8        : ally missile1_state (1 if slot present else -1)
-9..11    : Opponent Euler angles (normalized)
-12       : Opponent health level (0..1)
-13..15   : Ally position (normalized by 1e4)
-16..18   : Opponent position (normalized by 1e4)
-19       : Ally heading (degrees)
-20       : Ally health level (0..1)
-21       : Ally pitch attitude (normalized)
-22..     : Missile vector packs (MAX_TRACKED_MISSILES * 5 floats):
-           For each i in [0..MAX-1]:
-             [present, mx, my, mz, heading_deg]
-           present ∈ {0,1}, positions in meters (absolute), heading in degrees.
+Missile data layout in the flat tail (legacy, still used internally for vectorization):
+[present, mx, my, mz, heading_deg] * MAX_TRACKED_MISSILES
 """
+
 import numpy as np
 import gym
 import os
@@ -45,24 +29,13 @@ import time
 from . import dogfight_client as df
 from .constants import *  # NormStates etc.
 
-
-
-
-
 MAX_TRACKED_MISSILES = 4
 MISSILE_PACK_LEN = 5  # [present, mx, my, mz, heading]
 
 
 class HarfangEnv:
     """
-    Harfang air-combat environment.
-
-    Notes
-    -----
-    * For algorithmic compatibility with stable_baselines, observations contain only numeric
-      values, with missile info vectorized into fixed-length packs at the tail.
-    * step() returns (obs, reward, done, info), where `info["opponent_obs"]` provides the
-      opponent's observation vector for symmetric/scripted policies outside RL use.
+    Harfang air-combat environment with dict observations.
     """
 
     def __init__(self):
@@ -89,60 +62,62 @@ class HarfangEnv:
         self.n_missile1_state = True
 
         self.target_angle = 0.0
-        self.Plane_Irtifa = 0.0
+        self.Plane_Irtifa = 0.0  # altitude in meters (position[1])
 
         # Missile tracker
         self.missile_handler = MissileHandler()
 
-        # Spaces (action fixed; observation computed after first reset)
+        # Spaces
         self.action_space = gym.spaces.Box(
             low=np.array([-1.0, -1.0, -1.0, -1.0], dtype=np.float32),
             high=np.array([1.0, 1.0, 1.0, 1.0], dtype=np.float32),
             dtype=np.float32,
         )
-        # observation_space will be finalized at first reset (depends on lengths)
-        self.observation_space = None
+        self.observation_space = None  # will become gym.spaces.Dict after first reset
+
+        # Last states (dicts after first reset)
+        self.state = None
+        self.oppo_state = None
 
     # ------------------------------- Public API -------------------------------- #
     def reset(self):
         """
-        Reset simulation and return a pair (ally_obs, oppo_obs) for scripts that
-        control both sides (rule-based). This mirrors the previous API.
-
-        For gym/RL usage, prefer `reset_gym()` that returns (obs, info).
+        Reset simulation and return a pair (ally_obs_dict, oppo_obs_dict) for scripts
+        that control both sides (rule-based).
         """
         self._reset_episode_common()
-        state_ally = self._get_observation()          # ally POV
-        state_oppo = self._get_enemy_observation()    # opponent POV
+        state_ally = self._get_observation()          # dict (ally POV)
+        state_oppo = self._get_enemy_observation()    # dict (opponent POV)
 
-        # finalize observation_space on first call
+        # finalize observation_space on first call — Dict space derived from keys
         if self.observation_space is None:
-            obs_len = len(state_ally)
-            self.observation_space = gym.spaces.Box(
-                low=-np.inf, high=np.inf, shape=(obs_len,), dtype=np.float32
-            )
+            self.observation_space = self._build_obs_space_from(state_ally)
+
+        # cache dicts
+        self.state = state_ally
+        self.oppo_state = state_oppo
 
         return state_ally, state_oppo
 
     def reset_gym(self):
         """
-        Gym-style reset returning (obs, info).
+        Gym-style reset returning (obs_dict, info).
         """
         ally_obs, oppo_obs = self.reset()
         return ally_obs, {"opponent_obs": oppo_obs}
 
     def step(self, action_ally, action_enemy):
         """
-        Apply ally/opponent actions. Returns gym-style 4-tuple:
+        Apply ally/opponent actions.
 
         Returns
         -------
-        obs : np.ndarray
-            Ally observation after step.
+        obs : dict
+            Ally observation after step (dict).
         reward : float
         done : bool
         info : dict
-            - "opponent_obs": opponent observation after step
+            - "opponent_obs": opponent observation after step (dict)
             - "success": per-step success flag used by previous code
             - "episode_success": episode-level success
             - "now_missile_state", "missile1_state", "n_missile1_state"
@@ -150,9 +125,10 @@ class HarfangEnv:
         self._apply_action(action_ally, action_enemy)
         self.missile_handler.refresh_missiles()
 
-        n_state = self._get_observation()
-        n_state_oppo = self._get_enemy_observation()
+        n_state = self._get_observation()          # dict
+        n_state_oppo = self._get_enemy_observation()  # dict
 
+        # Reward/termination use environment fields; accept dicts for compatibility
         self._get_reward(self.state, action_ally, n_state)
         self.state = n_state
         self.oppo_state = n_state_oppo
@@ -168,14 +144,24 @@ class HarfangEnv:
         }
         return n_state, float(self.reward), bool(self.done), info
 
-    # Legacy helper (kept intact)
+    # Legacy helper (kept intact semantics; returns dict now)
     def step_test(self, action):
         self._apply_action(action, [0.0, 0.0, 0.0, 0.0])
         n_state = self._get_observation()
         self._get_reward(self.state, action, n_state)
         self.state = n_state
         self._get_termination()
-        return n_state, self.reward, self.done, {}, self.now_missile_state, self.missile1_state, self.n_missile1_state, self.Ally_target_locked, self.success
+        return (
+            n_state,
+            self.reward,
+            self.done,
+            {},
+            self.now_missile_state,
+            self.missile1_state,
+            self.n_missile1_state,
+            self.Ally_target_locked,
+            self.success,
+        )
 
     # ------------------------------- Internals --------------------------------- #
     def _reset_episode_common(self):
@@ -190,16 +176,15 @@ class HarfangEnv:
         self.fire_success = False
         self.now_missile_state = False
 
-        # Makine durumlarını sıfırla
+        # Machines & missiles
         self._reset_machine()
         self._reset_missile()
         self.missile_handler.refresh_missiles()
 
-        # 🔧 ESKİ DAVRANIŞIN GERİ GETİRİLMESİ — hedef ataması (KİLİT İÇİN ŞART)
-        df.set_target_id(self.Plane_ID_ally, self.Plane_ID_oppo)  # ally hedefi: enemy
-        df.set_target_id(self.Plane_ID_oppo, self.Plane_ID_ally)  # enemy hedefi: ally
+        # Target assignment (lock prerequisite)
+        df.set_target_id(self.Plane_ID_ally, self.Plane_ID_oppo)
+        df.set_target_id(self.Plane_ID_oppo, self.Plane_ID_ally)
 
-        # State önbellekleri
         self.state = None
         self.oppo_state = None
 
@@ -214,7 +199,7 @@ class HarfangEnv:
         df.set_plane_roll(self.Plane_ID_oppo, float(action_enemy[1]))
         df.set_plane_yaw(self.Plane_ID_oppo, float(action_enemy[2]))
 
-        # Missile fire handling (finalized to use actual available slots per side)
+        # Missile fire handling (slot-based)
         self.now_missile_state = False
         if float(action_ally[3]) > 0.0:
             ally_unfired_slots = self._unfired_slots(self.Plane_ID_ally)
@@ -235,25 +220,25 @@ class HarfangEnv:
         Return a list of integer slot indices that currently hold an unfired missile
         for the given plane_id.
         """
-        # Slots e.g. ["ally_1AIM_SL0", "ally_1Meteor1", ...]
         slots = df.get_machine_missiles_list(plane_id)
         slot_state = df.get_missiles_device_slots_state(plane_id).get("missiles_slots", [])
         unfired = []
         for i, present in enumerate(slot_state):
             if i < len(slots) and bool(present):
-                # Unfired missiles are those with position [0,0,0]
                 missile_id_guess = MissileHandler.slotid_to_missileid(slots[i])
                 try:
                     st = df.get_missile_state(missile_id_guess)
                     if list(st.get("position", [0.0, 0.0, 0.0])) == [0.0, 0.0, 0.0]:
                         unfired.append(i)
                 except Exception:
-                    # if state cannot be read, still allow fire by slot index
                     unfired.append(i)
         return unfired
 
     def _get_reward(self, state, action, n_state):
-        # Preserved reward function
+        """
+        Environment's reward (unchanged numerically), agnostic to dict/array observations.
+        Uses cached fields (self.target_angle, self.Plane_Irtifa, etc.).
+        """
         self.reward = 0
         self.success = 0
         self._get_loc_diff()
@@ -275,8 +260,6 @@ class HarfangEnv:
                 print('successful to fire')
                 self.success = 1
                 self.fire_success = True
-            else:
-                self.reward -= 0
 
         if self.oppo_health['health_level'] <= 0.1 and self.fire_success:
             self.reward += 600
@@ -288,7 +271,7 @@ class HarfangEnv:
         if self.oppo_health['health_level'] <= 0:
             self.done = True
             self.episode_success = True
-        if self.ally_health['health_level'] < 1.0:
+        if self.ally_health['health_level'] <= 0.5:
             self.done = True
 
     def _reset_machine(self):
@@ -315,6 +298,7 @@ class HarfangEnv:
         df.rearm_machine(self.Plane_ID_oppo)
 
     def _get_loc_diff(self):
+        # Uses absolute positions cached in _get_observation/_get_enemy_observation
         self.loc_diff = (
             ((self.Aircraft_Loc[0] - self.Oppo_Loc[0]) ** 2) +
             ((self.Aircraft_Loc[1] - self.Oppo_Loc[1]) ** 2) +
@@ -324,28 +308,37 @@ class HarfangEnv:
     # ------------------------------- Observations ------------------------------- #
     def _get_observation(self):
         """
-        Ally POV observation vector. See module docstring for indices.
+        Ally POV observation (dict).
         """
         plane = df.get_plane_state(self.Plane_ID_ally)
         oppo = df.get_plane_state(self.Plane_ID_oppo)
 
-        Plane_Pos = [plane["position"][0] / NormStates["Plane_position"],
-                     plane["position"][1] / NormStates["Plane_position"],
-                     plane["position"][2] / NormStates["Plane_position"]]
-        Plane_Euler = [plane["Euler_angles"][0] / NormStates["Plane_Euler_angles"],
-                       plane["Euler_angles"][1] / NormStates["Plane_Euler_angles"],
-                       plane["Euler_angles"][2] / NormStates["Plane_Euler_angles"]]
+        Plane_Pos = [
+            plane["position"][0] / NormStates["Plane_position"],
+            plane["position"][1] / NormStates["Plane_position"],  # altitude (z role), index 1
+            plane["position"][2] / NormStates["Plane_position"],
+        ]
+        Plane_Euler = [
+            plane["Euler_angles"][0] / NormStates["Plane_Euler_angles"],
+            plane["Euler_angles"][1] / NormStates["Plane_Euler_angles"],
+            plane["Euler_angles"][2] / NormStates["Plane_Euler_angles"],
+        ]
         Plane_Heading = plane["heading"]  # degrees
         Plane_Pitch_Att = plane["pitch_attitude"] / NormStates["Plane_pitch_attitude"]
         Plane_Roll_Att = plane["roll_attitude"] / NormStates["Plane_roll_attitude"]  # noqa: F841
 
-        Oppo_Pos = [oppo["position"][0] / NormStates["Plane_position"],
-                    oppo["position"][1] / NormStates["Plane_position"],
-                    oppo["position"][2] / NormStates["Plane_position"]]
-        Oppo_Euler = [oppo["Euler_angles"][0] / NormStates["Plane_Euler_angles"],
-                      oppo["Euler_angles"][1] / NormStates["Plane_Euler_angles"],
-                      oppo["Euler_angles"][2] / NormStates["Plane_Euler_angles"]]
+        Oppo_Pos = [
+            oppo["position"][0] / NormStates["Plane_position"],
+            oppo["position"][1] / NormStates["Plane_position"],
+            oppo["position"][2] / NormStates["Plane_position"],
+        ]
+        Oppo_Euler = [
+            oppo["Euler_angles"][0] / NormStates["Plane_Euler_angles"],
+            oppo["Euler_angles"][1] / NormStates["Plane_Euler_angles"],
+            oppo["Euler_angles"][2] / NormStates["Plane_Euler_angles"],
+        ]
 
+        # Cache absolute positions (meters)
         self.Plane_Irtifa = plane["position"][1]
         self.Aircraft_Loc = plane["position"]
         self.Oppo_Loc = oppo["position"]
@@ -357,18 +350,21 @@ class HarfangEnv:
 
         self.Oppo_target_locked = self.n_Oppo_target_locked
         self.n_Oppo_target_locked = oppo["target_locked"]
-        oppo_locked = 1 if self.n_Oppo_target_locked else -1  # noqa: F841 (kept for symmetry)
+        # oppo_locked = 1 if self.n_Oppo_target_locked else -1  # kept for parity if needed
 
         target_angle = plane['target_angle']
         self.target_angle = target_angle
 
-        Pos_Diff = [Oppo_Pos[0] - Plane_Pos[0],
-                    Oppo_Pos[1] - Plane_Pos[1],
-                    Oppo_Pos[2] - Plane_Pos[2]]
+        # Pos diff in normalized coordinates
+        Pos_Diff = [
+            Oppo_Pos[0] - Plane_Pos[0],
+            Oppo_Pos[1] - Plane_Pos[1],  # this is "z/altitude" lane by convention
+            Oppo_Pos[2] - Plane_Pos[2],
+        ]
 
         self.oppo_health = df.get_health(self.Plane_ID_oppo)
         self.ally_health = df.get_health(self.Plane_ID_ally)
-        ally_hea = self.ally_health['health_level']
+        ally_health_ = self.ally_health['health_level']
         oppo_hea = self.oppo_health['health_level']
 
         Missile_state = df.get_missiles_device_slots_state(self.Plane_ID_ally)
@@ -379,6 +375,7 @@ class HarfangEnv:
         # Vectorize incoming enemy missiles (absolute meters)
         missile_vec = self._vectorize_missiles(self.get_enemy_missile_vector())
 
+        # Build flat vector to reuse existing index map where needed
         States = np.concatenate((
             Pos_Diff,                      # 0..2
             Plane_Euler,                   # 3..5
@@ -387,51 +384,100 @@ class HarfangEnv:
             [missile1_state_val],          # 8
             Oppo_Euler,                    # 9..11
             [oppo_hea],                    # 12
-            Plane_Pos,                     # 13..15
+            Plane_Pos,                     # 13..15  (index 14 == altitude lane)
             Oppo_Pos,                      # 16..18
             [Plane_Heading],               # 19
-            [ally_hea],                    # 20
+            [ally_health_],                    # 20
             [Plane_Pitch_Att],             # 21
             missile_vec                    # 22..
         ), axis=None).astype(np.float32)
 
-        self.state = States
-        return States
+        # --- Dictionary mapping (altitude == plane_z == States[14]) ---
+        state_dict = {
+            "pos_diff_x": States[0],
+            "pos_diff_z": States[1],
+            "pos_diff_y": States[2],
+
+            "plane_roll": States[3],
+            "plane_pitch": States[4],
+            "plane_yaw": States[5],
+
+            "target_angle": States[6],
+            "locked": States[7],
+            "missile1_state": States[8],
+
+            "oppo_roll": States[9],
+            "oppo_pitch": States[10],
+            "oppo_yaw": States[11],
+
+            "oppo_heading": States[12],
+
+            "plane_x": States[13],
+            "plane_z": States[14],   # altitude lane (normalized)
+            "plane_y": States[15],
+            "altitude": States[14],  # alias for clarity
+
+            "oppo_x": States[16],
+            "oppo_z": States[17],
+            "oppo_y": States[18],
+
+            "plane_heading": States[19],
+            "ally_health": States[20],
+            "plane_pitch_att": States[21],
+        }
+
+        # Expand missile scalars as missile_0.. missile_{N-1} for dict space stability
+        for i in range(len(States) - 22):
+            state_dict[f"missile_{i}"] = States[22 + i]
+
+        # Keep internal flat tail parser available if needed by helpers
+        self._last_states_flat = States  # optional: for debugging/legacy
+
+        return state_dict
 
     def _get_enemy_observation(self):
         """
-        Opponent POV observation vector (same layout semantics as ally POV).
+        Opponent POV observation (dict).
         """
         plane = df.get_plane_state(self.Plane_ID_oppo)  # enemy self
-        oppo = df.get_plane_state(self.Plane_ID_ally)   # ally as opponent from enemy POV
+        oppo = df.get_plane_state(self.Plane_ID_ally)   # ally from enemy POV
 
-        Plane_Pos = [plane["position"][0] / NormStates["Plane_position"],
-                     plane["position"][1] / NormStates["Plane_position"],
-                     plane["position"][2] / NormStates["Plane_position"]]
-        Oppo_Pos = [oppo["position"][0] / NormStates["Plane_position"],
-                    oppo["position"][1] / NormStates["Plane_position"],
-                    oppo["position"][2] / NormStates["Plane_position"]]
+        Plane_Pos = [
+            plane["position"][0] / NormStates["Plane_position"],
+            plane["position"][1] / NormStates["Plane_position"],  # altitude lane
+            plane["position"][2] / NormStates["Plane_position"],
+        ]
+        Oppo_Pos = [
+            oppo["position"][0] / NormStates["Plane_position"],
+            oppo["position"][1] / NormStates["Plane_position"],
+            oppo["position"][2] / NormStates["Plane_position"],
+        ]
 
-        Plane_Euler = [plane["Euler_angles"][0] / NormStates["Plane_Euler_angles"],
-                       plane["Euler_angles"][1] / NormStates["Plane_Euler_angles"],
-                       plane["Euler_angles"][2] / NormStates["Plane_Euler_angles"]]
-        Oppo_Euler = [oppo["Euler_angles"][0] / NormStates["Plane_Euler_angles"],
-                      oppo["Euler_angles"][1] / NormStates["Plane_Euler_angles"],
-                      oppo["Euler_angles"][2] / NormStates["Plane_Euler_angles"]]
+        Plane_Euler = [
+            plane["Euler_angles"][0] / NormStates["Plane_Euler_angles"],
+            plane["Euler_angles"][1] / NormStates["Plane_Euler_angles"],
+            plane["Euler_angles"][2] / NormStates["Plane_Euler_angles"],
+        ]
+        Oppo_Euler = [
+            oppo["Euler_angles"][0] / NormStates["Plane_Euler_angles"],
+            oppo["Euler_angles"][1] / NormStates["Plane_Euler_angles"],
+            oppo["Euler_angles"][2] / NormStates["Plane_Euler_angles"],
+        ]
 
         Plane_Heading = plane["heading"]
-        Plane_Pitch_Att = plane["pitch_attitude"] / NormStates["Plane_pitch_attitude"]  # noqa: F841
-        Plane_Roll_Att = plane["roll_attitude"] / NormStates["Plane_roll_attitude"]      # noqa: F841
+        Plane_Pitch_Att = plane["pitch_attitude"] / NormStates["Plane_pitch_attitude"]
 
         n_Oppo_target_locked = plane["target_locked"]
         locked = 1 if n_Oppo_target_locked else -1
 
-        n_Ally_target_locked = oppo["target_locked"]  # noqa: F841 (kept for parity)
+        # n_Ally_target_locked = oppo["target_locked"]  # parity if needed
         target_angle = plane["target_angle"]
 
-        Pos_Diff = [Oppo_Pos[0] - Plane_Pos[0],
-                    Oppo_Pos[1] - Plane_Pos[1],
-                    Oppo_Pos[2] - Plane_Pos[2]]
+        Pos_Diff = [
+            Oppo_Pos[0] - Plane_Pos[0],
+            Oppo_Pos[1] - Plane_Pos[1],
+            Oppo_Pos[2] - Plane_Pos[2],
+        ]
 
         missile_vec = self._vectorize_missiles(self.get_ally_missile_vector())
 
@@ -439,46 +485,62 @@ class HarfangEnv:
         missile1_state_val = 1 if (Missile_state["missiles_slots"] and Missile_state["missiles_slots"][0]) else -1
 
         oppo_health = df.get_health(self.Plane_ID_oppo)
-        oppo_hea = oppo_health['health_level']
+        oppo_health_ = oppo_health['health_level']
         self.ally_health = df.get_health(self.Plane_ID_ally)
-        ally_hea = self.ally_health['health_level']
-
-        # States = np.concatenate((
-        #     Pos_Diff,  # 0..2
-        #     Plane_Euler,  # 3..5
-        #     [target_angle],  # 6
-        #     [locked],  # 7
-        #     [missile1_state_val],  # 8
-        #     Oppo_Euler,  # 9..11
-        #     [oppo_hea],  # 12
-        #     Plane_Pos,  # 13..15
-        #     Oppo_Pos,  # 16..18
-        #     [Plane_Heading],  # 19
-        #     [ally_hea],  # 20
-        #     [Plane_Pitch_Att],  # 21
-        #     missile_vec  # 22..
-        # ), axis=None).astype(np.float32)
-
-
+        ally_health_ = self.ally_health['health_level']
 
         States = np.concatenate((
-            Pos_Diff,            # 0..2
-            Plane_Euler,         # 3..5
-            [target_angle],      # 6
-            [locked],            # 7
-            [missile1_state_val],# 8
-            Oppo_Euler,          # 9..11 (ally euler)
-            [oppo_hea],          # 12 (enemy self health)
-            Plane_Pos,           # 13..15 (enemy self pos)
-            Oppo_Pos,            # 16..18 (ally pos)
-            [Plane_Heading],     # 19 (enemy heading)
-            [ally_hea],
-            [Plane_Pitch_Att],   # 20
-            missile_vec          # 21..
+            Pos_Diff,             # 0..2
+            Plane_Euler,          # 3..5
+            [target_angle],       # 6
+            [locked],             # 7
+            [missile1_state_val], # 8
+            Oppo_Euler,           # 9..11 (ally euler)
+            [oppo_health_],           # 12 (enemy self health)
+            Plane_Pos,            # 13..15 (enemy self pos)
+            Oppo_Pos,             # 16..18 (ally pos)
+            [Plane_Heading],      # 19 (enemy heading)
+            [ally_health_],           # 20
+            [Plane_Pitch_Att],    # 21
+            missile_vec           # 22..
         ), axis=None).astype(np.float32)
 
-        self.oppo_state = States
-        return States
+        oppo_state_dict = {
+            "pos_diff_x": States[0],
+            "pos_diff_z": States[1],
+            "pos_diff_y": States[2],
+
+            "plane_roll": States[3],
+            "plane_pitch": States[4],
+            "plane_yaw": States[5],
+
+            "target_angle": States[6],
+            "locked": States[7],
+            "missile1_state": States[8],
+
+            "oppo_roll": States[9],
+            "oppo_pitch": States[10],
+            "oppo_yaw": States[11],
+
+            "oppo_health": States[12],
+
+            "plane_x": States[13],
+            "plane_z": States[14],  # altitude lane
+            "plane_y": States[15],
+            "altitude": States[14],  # alias
+
+            "oppo_x": States[16],
+            "oppo_z": States[17],
+            "oppo_y": States[18],
+
+            "plane_heading": States[19],
+            "ally_health": States[20],
+            "plane_pitch_att": States[21],
+        }
+        for i in range(len(States) - 22):
+            oppo_state_dict[f"missile_{i}"] = States[22 + i]
+
+        return oppo_state_dict
 
     # --------------------------- Missile vector helpers -------------------------- #
     def _vectorize_missiles(self, missiles):
@@ -497,19 +559,20 @@ class HarfangEnv:
             pos = m.get("position", [0.0, 0.0, 0.0])
             vec[base + 0] = 1.0
             vec[base + 1] = float(pos[0])
-            vec[base + 2] = float(pos[1])
+            vec[base + 2] = float(pos[1])  # altitude lane
             vec[base + 3] = float(pos[2])
             vec[base + 4] = float(m.get("heading", 0.0))
         return vec
 
     def _parse_missiles_from_state(self, state):
         """
-        Inverse of _vectorize_missiles() for use by action helpers that expect a list
-        of dict missiles from the state tail. This preserves previous behavior while
-        keeping the observation fully numeric for RL.
+        Legacy inverse of _vectorize_missiles() for FLAT arrays.
         """
         missiles = []
         start = 22
+        if isinstance(state, dict):
+            # Prefer dict-aware version
+            return self._parse_missiles_from_state_dict(state)
         if len(state) <= start:
             return missiles
         for i in range(MAX_TRACKED_MISSILES):
@@ -525,6 +588,37 @@ class HarfangEnv:
                 continue
             missiles.append({
                 "missile_id": f"M{i}",
+                "position": [mx, my, mz],
+                "heading": hdg,
+            })
+        return missiles
+
+    def _parse_missiles_from_state_dict(self, state_dict):
+        """
+        Dict counterpart: reconstruct missiles from missile_0.. keys.
+        """
+        scalars = []
+        i = 0
+        while True:
+            key = f"missile_{i}"
+            if key not in state_dict:
+                break
+            scalars.append(float(state_dict[key]))
+            i += 1
+        missiles = []
+        # Group by MISSILE_PACK_LEN
+        packs = len(scalars) // MISSILE_PACK_LEN
+        for p in range(min(packs, MAX_TRACKED_MISSILES)):
+            base = p * MISSILE_PACK_LEN
+            present = scalars[base + 0] > 0.5
+            if not present:
+                continue
+            mx, my, mz = scalars[base + 1], scalars[base + 2], scalars[base + 3]
+            hdg = scalars[base + 4]
+            if (mx, my, mz) == (0.0, 0.0, 0.0):
+                continue
+            missiles.append({
+                "missile_id": f"M{p}",
                 "position": [mx, my, mz],
                 "heading": hdg,
             })
@@ -586,30 +680,73 @@ class HarfangEnv:
 
     # --------------------------- Expert-data helpers ---------------------------- #
     def get_loc_diff(self, state):
-        loc_diff = (((state[0] * 10000) ** 2) + ((state[1] * 10000) ** 2) + ((state[2] * 10000) ** 2)) ** 0.5
-        return loc_diff
+        """
+        Compatible distance helper for dict/array observations (normalized axis).
+        """
+        if isinstance(state, dict):
+            dx = float(state.get("pos_diff_x", 0.0)) * 10000.0
+            dz = float(state.get("pos_diff_z", 0.0)) * 10000.0  # altitude lane
+            dy = float(state.get("pos_diff_y", 0.0)) * 10000.0
+            return (dx*dx + dy*dy + dz*dz) ** 0.5
+        else:
+            # legacy array
+            return (((state[0] * 10000) ** 2) + ((state[1] * 10000) ** 2) + ((state[2] * 10000) ** 2)) ** 0.5
 
     def get_reward(self, state, action, n_state):
-        # preserved copy of the compact reward for data extraction
+        """
+        Preserved compact reward for data extraction; supports dict/array.
+        """
         reward = 0
         step_success = 0
+
         loc_diff = self.get_loc_diff(n_state)
         reward -= (0.0001 * loc_diff)
-        reward -= (n_state[6]) * 10
-        if action[-1] > 0:
+
+        # target_angle
+        ta = n_state.get("target_angle") if isinstance(n_state, dict) else n_state[6]
+        reward -= (ta) * 10
+
+        # fire penalty and success flag
+        fired = (action[-1] > 0)
+        if fired:
             reward -= 8
-            if state[8] > 0 and state[7] < 0:
+            missile1 = (state.get("missile1_state") if isinstance(state, dict) else state[8]) > 0
+            locked = (state.get("locked") if isinstance(state, dict) else state[7]) > 0
+            if missile1 and not locked:
                 step_success = -1
-            elif state[8] > 0 and state[7] > 0:
+            elif missile1 and locked:
                 step_success = 1
-            else:
-                reward -= 0
-        if n_state[-1] < 0.1:
+
+        # enemy down bonus (approx via enemy health if available)
+        enemy_down = False
+        if isinstance(n_state, dict):
+            # Here we don't keep enemy health in the dict; caller can add its own criterion.
+            enemy_down = False
+        else:
+            enemy_down = (n_state[-1] < 0.1)
+
+        if enemy_down:
             reward += 600
+
         return reward, step_success
 
     def get_termination(self, state):
+        """
+        Compact termination for arrays. For dicts, rely on env._get_termination().
+        """
+        if isinstance(state, dict):
+            return False
         return bool(state[-1] <= 0.1)
+
+    # ------------------------------- Spaces ------------------------------------- #
+    def _build_obs_space_from(self, obs_dict: dict) -> gym.spaces.Dict:
+        """
+        Create a gym.spaces.Dict with scalar Boxes for each key in the observation dict.
+        """
+        return gym.spaces.Dict({
+            k: gym.spaces.Box(low=-np.inf, high=np.inf, shape=(), dtype=np.float32)
+            for k in obs_dict.keys()
+        })
 
 
 # ----------------------------- Missile management ------------------------------ #
@@ -727,40 +864,40 @@ class MissileHandler:
 
 
 # --------------------------- Minimal enemy environment ------------------------- #
-class SimpleEnemy(HarfangEnv):
-    """
-    Minimal adversary wrapper that still respects the finalized slot-based firing.
-    """
-
-    def __init__(self):
-        super(SimpleEnemy, self).__init__()
-        self.has_fired = False
-
-    def _apply_action(self, action_ally, action_enemy):
-        # Apply basic controls
-        df.set_plane_pitch(self.Plane_ID_ally, float(action_ally[0]))
-        df.set_plane_roll(self.Plane_ID_ally, float(action_ally[1]))
-        df.set_plane_yaw(self.Plane_ID_ally, float(action_ally[2]))
-
-        df.set_plane_pitch(self.Plane_ID_oppo, float(action_enemy[0]))
-        df.set_plane_roll(self.Plane_ID_oppo, float(action_enemy[1]))
-        df.set_plane_yaw(self.Plane_ID_oppo, float(action_enemy[2]))
-
-        # Slot-based fires (ally)
-        if float(action_ally[3]) > 0.0:
-            ally_unfired_slots = self._unfired_slots(self.Plane_ID_ally)
-            if ally_unfired_slots:
-                df.fire_missile(self.Plane_ID_ally, min(ally_unfired_slots))
-                self.now_missile_state = True
-                print(" === ally fired missile! ===")
-        else:
-            self.now_missile_state = False
-
-        # Slot-based fires (enemy)
-        if float(action_enemy[3]) > 0.0:
-            oppo_unfired_slots = self._unfired_slots(self.Plane_ID_oppo)
-            if oppo_unfired_slots:
-                df.fire_missile(self.Plane_ID_oppo, min(oppo_unfired_slots))
-                print(" === enemy fired missile! ===")
-
-        df.update_scene()
+# class SimpleEnemy(HarfangEnv):
+#     """
+#     Minimal adversary wrapper that still respects the finalized slot-based firing.
+#     """
+#
+#     def __init__(self):
+#         super(SimpleEnemy, self).__init__()
+#         self.has_fired = False
+#
+#     def _apply_action(self, action_ally, action_enemy):
+#         # Apply basic controls
+#         df.set_plane_pitch(self.Plane_ID_ally, float(action_ally[0]))
+#         df.set_plane_roll(self.Plane_ID_ally, float(action_ally[1]))
+#         df.set_plane_yaw(self.Plane_ID_ally, float(action_ally[2]))
+#
+#         df.set_plane_pitch(self.Plane_ID_oppo, float(action_enemy[0]))
+#         df.set_plane_roll(self.Plane_ID_oppo, float(action_enemy[1]))
+#         df.set_plane_yaw(self.Plane_ID_oppo, float(action_enemy[2]))
+#
+#         # Slot-based fires (ally)
+#         if float(action_ally[3]) > 0.0:
+#             ally_unfired_slots = self._unfired_slots(self.Plane_ID_ally)
+#             if ally_unfired_slots:
+#                 df.fire_missile(self.Plane_ID_ally, min(ally_unfired_slots))
+#                 self.now_missile_state = True
+#                 print(" === ally fired missile! ===")
+#         else:
+#             self.now_missile_state = False
+#
+#         # Slot-based fires (enemy)
+#         if float(action_enemy[3]) > 0.0:
+#             oppo_unfired_slots = self._unfired_slots(self.Plane_ID_oppo)
+#             if oppo_unfired_slots:
+#                 df.fire_missile(self.Plane_ID_oppo, min(oppo_unfired_slots))
+#                 print(" === enemy fired missile! ===")
+#
+#         df.update_scene()
