@@ -52,8 +52,8 @@ class HarfangEnv:
         self.Plane_ID_ally = "ally_1"
 
         # Health/bookkeeping
-        self.oppo_health = 0.2
-        self.ally_health = 1.0
+        self.oppo_health = 0.7
+        self.ally_health = 0.7
 
         # Locks/missile slot snapshot
         self.Ally_target_locked = False
@@ -236,34 +236,117 @@ class HarfangEnv:
 
     def _get_reward(self, state, action, n_state):
         """
-        Environment's reward (unchanged numerically), agnostic to dict/array observations.
-        Uses cached fields (self.target_angle, self.Plane_Irtifa, etc.).
+        Environment's reward.
         """
         self.reward = 0
         self.success = 0
-        self._get_loc_diff()
 
-        self.reward -= (0.0001 * self.loc_diff)
-        self.reward -= self.target_angle * 10
+        # --- Damage-based rewards (proportional to health delta) --------------------------------------
+        prev_ally = float(state.get("ally_health", 1.0))
+        curr_ally = float(n_state.get("ally_health", 1.0))
+        prev_oppo = float(state.get("oppo_health", 1.0))
+        curr_oppo = float(n_state.get("oppo_health", 1.0))
 
-        if self.Plane_Irtifa < 2000:
-            self.reward -= 4
-        if self.Plane_Irtifa > 7000:
-            self.reward -= 4
+        # If your health is in [0,1], keep SCALE=1.0. If it's [0,100], set SCALE=100.0
+        SCALE = 1.0
+        EPS = 1e-6  # ignore tiny numerical noise
+        W_ENEMY_HIT = 400.0  # +reward if *enemy* loses all health in one step (scaled)
+        W_ALLY_HIT = 500.0  # -penalty if *ally* loses all health in one step (scaled)
+        ALPHA = 1.0  # 1.0 = linear; >1.0 emphasizes big hits; <1.0 smooths spikes
 
-        if self.now_missile_state is True:
-            self.reward -= 8
-            if self.missile1_state and (self.Ally_target_locked is False):
-                self.success = -1
-                print('failed to fire')
-            elif self.missile1_state and (self.Ally_target_locked is True):
-                print('successful to fire')
-                self.success = 1
-                self.fire_success = True
+        ally_dmg = max(0.0, (prev_ally - curr_ally))
+        oppo_dmg = max(0.0, (prev_oppo - curr_oppo))
 
-        if self.oppo_health['health_level'] <= 0.1 and self.fire_success:
-            self.reward += 600
+        if oppo_dmg > EPS:
+            self.reward += W_ENEMY_HIT * ((oppo_dmg / SCALE) ** ALPHA)
+            self.reward += 200 # sabit reward
+            print(f"enemy hit: Δ={oppo_dmg:.3f}")
+
+        if ally_dmg > EPS:
+            self.reward -= W_ALLY_HIT * ((ally_dmg / SCALE) ** ALPHA)
+            self.reward -= 200 # sabit reward
+            print(f"ally hit:  Δ={ally_dmg:.3f}")
+
+        # --- Relative Bearing shaping reward ----------------------------------------------------------------
+        # K_B = reward scale
+        #   ↑ K_B → stronger push to keep enemy nose-on
+        #   ↓ K_B → weaker effect, bearing less important
+        K_B = 0.12  # keep small vs. hit/kill rewards (≈0.05–0.20)
+
+        # P = front-bias exponent
+        #   =1.0 → gentle, forgiving
+        #   >1.0 → stricter nose-on discipline
+        #   >>3  → too narrow, may tunnel vision
+        P = 1.5  # usually 1.0–2.0 is balanced
+
+        # rel_bear: relative bearing of enemy in degrees
+        rel_bear = state.get("relative_bearing", 0.0)
+        beta = float(rel_bear)
+
+        # reward term: cosine curve peaks at 0° and decays smoothly to 0 at ±180°
+        #   (1+cos)/2  ∈ [0,1]  → maps 0°→1, ±180°→0
+        # raising to P sharpens the focus on forward sector
+        self.reward += K_B * ((1.0 + math.cos(math.radians(beta))) * 0.5) ** P
+
+        # --- Range shaping reward --------------------------------------------------------------------
+        # k_r = reward scale
+        #   ↑ k_r → distance to enemy matters more
+        #   ↓ k_r → range less important
+        k_r = 0.20
+
+        # R* = ideal firing distance (meters, high kill probability band)
+        #   Smaller → favors close-in fights
+        #   Larger  → favors long-range shots
+        R_star = 1500.0
+
+        # σ = tolerance (meters, width of the "good band")
+        #   Smaller → narrow sweet spot, stricter
+        #   Larger  → wide band, more forgiving
+        sigma = 200.0
+
+        d = float(state.get("distance_to_enemy", 0.0))  # current distance (m)
+
+        # Gaussian reward: peaks at R*, decays smoothly away
+        self.reward += k_r * math.exp(-((d - R_star) ** 2) / (2 * sigma ** 2))
+
+        # ----------------------------------------------------------------------------------------------
+
+        # --- Altitude shaping (Gaussian around preferred A*) -----------------------------------------
+        k_a = 0.10  # scale: keep small vs. hit/kill
+        A_star = 5000.0  # preferred altitude (m)
+        sigma_a = 2000.0  # tolerance (m): smaller=narrow band, larger=forgiving
+
+        alt = float(self.Plane_Irtifa)
+
+        # Bonus peaks at A* (≈k_a) and decays smoothly with distance from A*
+        self.reward += k_a * math.exp(-((alt - A_star) ** 2) / (2.0 * sigma_a ** 2))
+
+
+        #------Altitude Limits------------
+        if alt <  200 or alt > 10000:
+            self.reward -= 1000
+        #---------------------------------
+
+        # ----------------------------------------------------------------------------------------------
+        # --- Per-step time cost -----------------
+        c_t = 0.01  # small penalty per step
+        self.reward -= c_t
+        #---------------------------------------------------
+
+        # --- Too-far penalty -------------------------------------
+        D_far = 10000.0  # meters, threshold considered "too far"
+        penalty = 2.0  # per-step penalty if beyond D_far
+
+        d = float(state.get("distance_to_enemy", 0.0))
+
+        if d > D_far:
+            self.reward -= penalty
+        #-------------------------------------------------------------------
+
+        if self.oppo_health['health_level'] <= 0.0:
+            self.reward += 1000
             print('enemy have fallen')
+            self.success = True
 
     def _get_termination(self):
         if self.Plane_Irtifa < 500 or self.Plane_Irtifa > 10000:
@@ -271,19 +354,19 @@ class HarfangEnv:
         if self.oppo_health['health_level'] <= 0:
             self.done = True
             self.episode_success = True
-        if self.ally_health['health_level'] <= 0.5:
+        if self.ally_health['health_level'] <= 0.2:
             self.done = True
 
     def _reset_machine(self):
         df.reset_machine("ally_1")
         df.reset_machine("ennemy_2")
-        df.set_health(self.Plane_ID_oppo, 0.75)
-        df.set_health(self.Plane_ID_ally, 0.75)
-        self.oppo_health = 0.2
-        self.ally_health = 1.0
+        df.set_health(self.Plane_ID_oppo, 0.7)
+        df.set_health(self.Plane_ID_ally, 0.7)
+        self.oppo_health = 0.7
+        self.ally_health = 0.7
 
-        df.reset_machine_matrix(self.Plane_ID_oppo, 0, 4200, 0, 0, 0, 0)
-        df.reset_machine_matrix(self.Plane_ID_ally, 0, 3500, -4000, 0, 0, 0)
+        df.reset_machine_matrix(self.Plane_ID_ally, 0, 4200, 0, 0, 0, 0)
+        df.reset_machine_matrix(self.Plane_ID_oppo, 0, 3500, -4000, 0, 0, 0)
 
         df.set_plane_thrust(self.Plane_ID_ally, 1.0)
         df.set_plane_thrust(self.Plane_ID_oppo, 1.0)
@@ -375,6 +458,8 @@ class HarfangEnv:
         # Vectorize incoming enemy missiles (absolute meters)
         missile_vec = self._vectorize_missiles(self.get_enemy_missile_vector())
 
+
+
         # Build flat vector to reuse existing index map where needed
         States = np.concatenate((
             Pos_Diff,                      # 0..2
@@ -392,11 +477,17 @@ class HarfangEnv:
             missile_vec                    # 22..
         ), axis=None).astype(np.float32)
 
+        dx, dy, dz = States[0] * 10000, States[2] * 10000, States[1] * 10000
+        plan_heading = States[19]
+        angle_to_enemy = np.degrees(np.arctan2(dx, dy))
+        relative_bearing = (angle_to_enemy - plan_heading + 180) % 360 - 180
+        dist_enemy = float(np.sqrt(dx * dx + dy * dy + dz * dz))
         # --- Dictionary mapping (altitude == plane_z == States[14]) ---
         state_dict = {
             "pos_diff_x": States[0],
             "pos_diff_z": States[1],
             "pos_diff_y": States[2],
+            "distance_to_enemy" : dist_enemy,
 
             "plane_roll": States[3],
             "plane_pitch": States[4],
@@ -424,6 +515,7 @@ class HarfangEnv:
             "plane_heading": States[19],
             "ally_health": States[20],
             "plane_pitch_att": States[21],
+            "relative_bearing": relative_bearing,
         }
 
         # Expand missile scalars as missile_0.. missile_{N-1} for dict space stability
