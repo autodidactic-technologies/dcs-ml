@@ -299,7 +299,7 @@ class HarfangEnv:
         #   Larger  → favors long-range shots
         R_star = 1500.0
 
-        # σ = tolerance (meters, width of the "good band")
+        # σ = tolerance (meters, width of the "good band")f
         #   Smaller → narrow sweet spot, stricter
         #   Larger  → wide band, more forgiving
         sigma = 200.0
@@ -782,44 +782,6 @@ class HarfangEnv:
         else:
             # legacy array
             return (((state[0] * 10000) ** 2) + ((state[1] * 10000) ** 2) + ((state[2] * 10000) ** 2)) ** 0.5
-
-    def get_reward(self, state, action, n_state):
-        """
-        Preserved compact reward for data extraction; supports dict/array.
-        """
-        reward = 0
-        step_success = 0
-
-        loc_diff = self.get_loc_diff(n_state)
-        reward -= (0.0001 * loc_diff)
-
-        # target_angle
-        ta = n_state.get("target_angle") if isinstance(n_state, dict) else n_state[6]
-        reward -= (ta) * 10
-
-        # fire penalty and success flag
-        fired = (action[-1] > 0)
-        if fired:
-            reward -= 8
-            missile1 = (state.get("missile1_state") if isinstance(state, dict) else state[8]) > 0
-            locked = (state.get("locked") if isinstance(state, dict) else state[7]) > 0
-            if missile1 and not locked:
-                step_success = -1
-            elif missile1 and locked:
-                step_success = 1
-
-        # enemy down bonus (approx via enemy health if available)
-        enemy_down = False
-        if isinstance(n_state, dict):
-            # Here we don't keep enemy health in the dict; caller can add its own criterion.
-            enemy_down = False
-        else:
-            enemy_down = (n_state[-1] < 0.1)
-
-        if enemy_down:
-            reward += 600
-
-        return reward, step_success
 
     def get_termination(self, state):
         """
