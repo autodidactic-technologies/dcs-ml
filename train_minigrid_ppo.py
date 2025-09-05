@@ -190,7 +190,7 @@ def main():
         checkpoint_callback = CheckpointCallback(
             save_freq=100_000,
             save_path=args.models_dir,   # consistent relative path
-            name_prefix="ppo_harfang_v3_checkpoint"
+            name_prefix="ppo_harfang_v4_checkpoint"
         )
 
         # Train (SB3 logs to TensorBoard; W&B syncs TB scalars automatically)

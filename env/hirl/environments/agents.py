@@ -178,15 +178,15 @@ class Ally(Agents):
 # ------------------------------ Rule-based Opponent ---------------------------- #
 @dataclass
 class OppoParams:
-    fire_cooldown: int = 450           # adım
-    press_range_m: float = 4500.0      # kilitliyken ateş eşiği
-    hard_evade_threat_m: float = 9000.0
-    beam_threat_m: float = 12000.0
-    min_floor_m: float = 1000.0
-    climb_target_m: float = 5000.0
-    crank_duration: tuple = (40, 70)   # adım aralığı (takipte kalma)
-    beam_duration: tuple = (35, 55)    # tehdit varken kısa kaçınma penceresi
-    egress_duration: tuple = (80, 120) # yakın tehditte daha uzun kaçınma
+    fire_cooldown: int = 300           # shorter cooldown → shoots more often
+    press_range_m: float = 5500.0      # engages earlier
+    hard_evade_threat_m: float = 7000.0  # only evade if enemy very close
+    beam_threat_m: float = 9000.0       # reduced beam distance → less timid
+    min_floor_m: float = 800.0          # allows staying a bit lower
+    climb_target_m: float = 4000.0      # lower climb target → less time climbing
+    crank_duration: tuple = (20, 40)    # shorter track lock-in
+    beam_duration: tuple = (20, 35)     # shorter evasion when medium threat
+    egress_duration: tuple = (40, 70)   # shorter egress when close threat
     rng_seed: int = 2025
 
 
@@ -196,128 +196,77 @@ class Oppo(Agents):
         self._step = 0
         self.debug = bool(debug)
         self.params = params or OppoParams()
-        # Dışarıdan verilen cooldown varsa onu kullan; yoksa parametreyi kullan
         self.fire_cooldown = int(fire_cooldown) if fire_cooldown is not None else int(self.params.fire_cooldown)
-        self._last_fire_step = -10_000  # ilk atışa izin
+        self._last_fire_step = -10_000  # cooldown tracking only (NOT a phase)
 
-        # Karar pencerelerini hafifçe tutarlı yapmak için RNG ve “komut kilitleyici”
-        self._rng = random.Random(self.params.rng_seed)
-        self._lock_command_until = -1
-        self._locked_command = None
+        # aggression & safety bands (tune to bias offense)
+        self._PRESS_RANGE = float(self.params.press_range_m)      # shoot if lock + <= this
+        self._HARD_EVADE_R = float(self.params.hard_evade_threat_m)
+        self._MID_EVADE_R  = float(self.params.beam_threat_m)
 
-    def _lock_for(self, base_command: str, duration_range: tuple[int, int]):
-        """Komutu kısa bir süre sabitleyerek salınımı azalt."""
-        dur = self._rng.randint(int(duration_range[0]), int(duration_range[1]))
-        self._locked_command = base_command
-        self._lock_command_until = self._step + dur
+        # minimal altitude control with tiny hysteresis (prevents command flip-flop)
+        self._FLOOR_LOW  = max(self.params.min_floor_m, self.params.climb_target_m - 300.0)
+        self._FLOOR_HIGH = max(self.params.min_floor_m, self.params.climb_target_m + 200.0)
 
-    def behave(self):
-        assert self.state is not None, "Call update(state) before behave()."
-        s = self.state
-
-        # ---- Mesafe/irtifa/lock (dict uyumlu) ----
+    # --- shared metric reader (dict/array safe) ---
+    def _metrics(self, s):
         if isinstance(s, dict):
             dx = float(s.get("pos_diff_x", 0.0)) * 10000.0
             dz = float(s.get("pos_diff_z", 0.0)) * 10000.0
             dy = float(s.get("pos_diff_y", 0.0)) * 10000.0
-            distance_m = float(np.sqrt(dx * dx + dy * dy + dz * dz))
-
+            distance_m = float(np.sqrt(dx*dx + dy*dy + dz*dz))
             altitude_m = float(s.get("altitude", 0.0)) * 10000.0
             locked = bool(float(s.get("locked", -1.0)) > 0.0)
         else:
-            dx, dy, dz = s[0] * 10000.0, s[2] * 10000.0, s[1] * 10000.0
-            distance_m = float(np.sqrt(dx * dx + dy * dy + dz * dz))
-            altitude_m = s[14] * 10000.0
+            dx, dy, dz = s[0]*10000.0, s[2]*10000.0, s[1]*10000.0
+            distance_m = float(np.sqrt(dx*dx + dy*dy + dz*dz))
+            altitude_m = float(s[14]*10000.0)
             locked = bool(s[7] > 0)
 
-        # Tehdit algısı
-        threat = Agents._has_incoming_threat(s)
+        # guards
+        if not np.isfinite(distance_m): distance_m = 1e6
+        if not np.isfinite(altitude_m): altitude_m = self._FLOOR_LOW
+        return distance_m, altitude_m, locked
 
-        # --- NET ATEŞ KAPISI (parametrelerle) ---
+    def behave(self):
+        assert self.state is not None, "Call update(state) before behave()."
+        s = self.state
+        d, alt, locked = self._metrics(s)
+
+        # threat is external; treat True as “real threat”
+        threat = bool(Agents._has_incoming_threat(s))
+
+        # 1) shoot as soon as the gate opens (offensive bias)
         can_fire = (
-            locked
-            and (distance_m < float(self.params.press_range_m))
-            and ((self._step - self._last_fire_step) > int(self.fire_cooldown))
+            locked and
+            d <= self._PRESS_RANGE and
+            (self._step - self._last_fire_step) > self.fire_cooldown
         )
-
-        # Önceden kilitlenmiş bir komut varsa ve süresi dolmadıysa onu uygula
-        if self._locked_command is not None and self._step < self._lock_command_until and not can_fire:
-            command = self._locked_command
-        else:
-            # Faz mantığı (yapıyı bozma): approach / engage / maintain
-            if self._step < 200:
-                phase = "approach"
-            elif self._step < 500:
-                phase = "engage"
-            else:
-                phase = "maintain"
-
-            # İrtifa eşikleri parametrelerden türetildi
-            # (mevcut sabitlerin birebir muadili olacak şekilde)
-            approach_floor = max(self.params.min_floor_m, self.params.climb_target_m - 1000.0)  # ~4000
-            engage_floor = max(self.params.min_floor_m, self.params.climb_target_m - 1500.0)   # ~3500
-            maintain_floor = max(self.params.min_floor_m, self.params.climb_target_m)          # ~5000
-
-            # Tehdit eşikleri parametrelerden
-            hard_evade_R = float(self.params.hard_evade_threat_m)
-            beam_evade_R = float(self.params.beam_threat_m)
-
-            if can_fire:
-                command = "fire"
-            else:
-                if phase == "approach":
-                    command = "climb" if altitude_m < approach_floor else "track"
-
-                elif phase == "engage":
-                    if threat and distance_m < hard_evade_R:
-                        command = "evade"
-                        # yakın tehdit: daha uzun kaçınma penceresi
-                        self._lock_for("evade", self.params.egress_duration)
-                    elif threat and distance_m < beam_evade_R:
-                        command = "evade"
-                        # orta menzil tehdit: orta kısalıkta kaçınma
-                        self._lock_for("evade", self.params.beam_duration)
-                    else:
-                        command = "climb" if altitude_m < engage_floor else "track"
-                        if command == "track":
-                            # trak’te kalma süresini hafifçe stabil tut
-                            self._lock_for("track", self.params.crank_duration)
-
-                else:  # maintain
-                    if threat and distance_m < hard_evade_R:
-                        command = "evade"
-                        self._lock_for("evade", self.params.egress_duration)
-                    elif threat and distance_m < beam_evade_R:
-                        command = "evade"
-                        self._lock_for("evade", self.params.beam_duration)
-                    else:
-                        command = "climb" if altitude_m < maintain_floor else "track"
-                        if command == "track":
-                            self._lock_for("track", self.params.crank_duration)
-
-            # Eğer yeni komut üretildiyse ve kilit süresi geçmişse, _locked_command güncel kalsın;
-            # fire komutu için kilitleme uygulamıyoruz (tek atım + cooldown)
-            if command == "fire":
-                self._locked_command = None
-                self._lock_command_until = -1
-
-        # Komutu aksiyona çevir
-        if command == "track":
-            action = self.action_helper.track_cmd(s)
-        elif command == "evade":
-            action = self.action_helper.evade_cmd(s)
-        elif command == "climb":
-            action = self.action_helper.climb_cmd(s)
-        elif command == "fire":
+        if can_fire:
             action = self.action_helper.fire_cmd(s)
-            self._last_fire_step = self._step  # cooldown
-        else:  # DEFAULT
-            action = self.action_helper.track_cmd(s)
-            command = "track"
+            command = "fire"
+            self._last_fire_step = self._step
+        else:
+            # 2) only evade on *clear* threat within reasonable radius
+            if threat and (d <= self._HARD_EVADE_R):
+                action = self.action_helper.evade_cmd(s)
+                command = "evade"
+            else:
+                # 3) keep altitude just above a small floor; otherwise press
+                if alt < self._FLOOR_LOW:
+                    action = self.action_helper.climb_cmd(s)
+                    command = "climb"
+                elif threat and (d <= self._MID_EVADE_R):
+                    # medium threat but not critical → still press (offensive bias)
+                    action = self.action_helper.track_cmd(s)
+                    command = "track"
+                else:
+                    # default: press/track to close and maintain pressure
+                    action = self.action_helper.track_cmd(s)
+                    command = "track"
 
-        if self.debug:
-            # print(f"[OPPO] step={self._step} d={distance_m:.0f}m alt={altitude_m:.0f} lock={int(locked)} thr={int(threat)} -> {command} a={action}")
-            pass
+        if self.debug and (self._step % 30 == 0):
+            print(f"[OPPO] t={self._step:05d} d={d:6.0f} alt={alt:5.0f} lock={int(locked)} thr={int(threat)} cmd={command}")
 
         self._step += 1
         return action, command

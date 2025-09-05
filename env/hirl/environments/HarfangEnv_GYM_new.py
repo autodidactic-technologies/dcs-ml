@@ -89,6 +89,7 @@ class HarfangEnv(gym.Env):
 
         # Missile tracker
         self.missile_handler = MissileHandler()
+        self.no_missile_penalized = False
 
         # Initialize previous action command
         self._last_macro_cmd = None
@@ -495,10 +496,16 @@ class HarfangEnv(gym.Env):
             pass
         #--------------------------------Successful FIRE-----------------------------------
         ally_unfired_slots = self._unfired_slots(self.Plane_ID_ally)
+
         if len(ally_unfired_slots) > 0:
-            if state.get("locked")==1 and action==CMD_FIRE:
-                #print(f"FIRE REWARD")
+            if state.get("locked") == 1 and action == CMD_FIRE:
                 self.reward += 100
+
+        else:  # hiç füze kalmamış
+            if not self.no_missile_penalized:  # daha önce ceza vermedik
+                self.reward += -100
+                self.no_missile_penalized = True
+
         #-------------------------------------------------------------------
 
         if self.oppo_health['health_level'] <= 0.0:
