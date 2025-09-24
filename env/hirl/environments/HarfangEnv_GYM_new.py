@@ -53,7 +53,7 @@ CMD_TRACK = 0
 CMD_EVADE = 1
 CMD_CLIMB = 2
 CMD_FIRE = 3
-CMD_HOLD = 4 # Repeat Previous Action
+CMD_HOLD = 4 # DO NOTHING ACTION
 
 
 
@@ -65,7 +65,7 @@ class HarfangEnv(gym.Env):
         # --- runtime flags/state ---
         self.done = False
         self.loc_diff = 0.0
-        self.success = 0
+        self.success = False
         self.episode_success = False
         self.fire_success = False
         self.now_missile_state = False
@@ -73,6 +73,16 @@ class HarfangEnv(gym.Env):
         self.fired = False
         self.fire_timer = 0
         self.fire_interval = 50
+
+        self.macro_durations = {
+            "track": 45,
+            #"evade": 30,
+            "evade": 60,
+            "climb": 20,
+            "fire": 1,
+            "hold": 3,
+            None: 1,
+        }
 
         # IDs
         self.Plane_ID_oppo = "ennemy_2"
@@ -137,7 +147,7 @@ class HarfangEnv(gym.Env):
         self.n_Ally_target_locked = False
         self.missile1_state = True
         self.n_missile1_state = True
-        self.success = 0
+        self.success = False
         self.done = False
         self.episode_success = False
         self.fire_success = False
@@ -200,43 +210,17 @@ class HarfangEnv(gym.Env):
         ally_obs, oppo_obs = self.reset()
         return ally_obs, {"opponent_obs": oppo_obs}
 
-
-    def sim_step(self):
-        pass
-
     def step(self, action_ally):
         """
-        Apply ally/opponent actions.
-
-        Returns
-        -------
-        obs : dict
-            Ally observation after step (dict).
-        reward : float
-        done : bool
-        info : dict
-            - "opponent_obs": opponent observation after step (dict)
-            - "success": per-step success flag used by previous code
-            - "episode_success": episode-level success
-            - "now_missile_state", "missile1_state", "n_missile1_state"
+        Apply ally/opponent actions with internal macro repetition.
+        TRACK/CLIMB/EVADE -> configurable substeps inside one RL step.
+        FIRE/HOLD -> 1 substep (default).
         """
 
-        # for i in range(30):
-        #     self.sim_step()
-        #
-        #
-        # return n_state, float(self.reward), terminated, truncated, info
+        # 1) effective macro
+        effective_macro = int(action_ally)
 
-
-
-        # 1) decide the effective macro (convert HOLD → last macro)
-        if action_ally == CMD_HOLD:
-            print("ALLY applying HOLD")
-            effective_macro = self._last_macro_cmd
-        else:
-            effective_macro = int(action_ally)
-
-        # 2) map effective macro → command string
+        # 2) macro → command
         if effective_macro == CMD_TRACK:
             command = "track"
         elif effective_macro == CMD_EVADE:
@@ -245,102 +229,129 @@ class HarfangEnv(gym.Env):
             command = "climb"
         elif effective_macro == CMD_FIRE:
             command = "fire"
+        elif effective_macro == CMD_HOLD:
+            command = "hold"
         elif effective_macro is None:
             command = None
         else:
             command = None
 
-        s = self._get_observation()
+        # --- Kaç alt-adım? command → macro_durations sözlüğünden al ---
+        repeat = self.macro_durations.get(command, 1)
 
-        # Komutu aksiyona çevir
-        if command == "track":
-            print("ALLY applying TRACK")
-            action = self.action_helper.track_cmd(s)
-        elif command == "evade":
-            print("ALLY applying EVADE")
-            action = self.action_helper.evade_cmd(s)
-        elif command == "climb":
-            action = self.action_helper.climb_cmd(s)
-            print("ALLY applying CLIMB")
-        elif command == "fire":
-            print("ALLY applying FIRE")
-            action = self.action_helper.fire_cmd(s)
-        elif command is None:
-            action = [0, 0, 0, 0]
+        acc_reward = 0.0
+        terminated = False
+        truncated = False
+        oppo_cmd = None
+        action_ally_aero = [0, 0, 0, 0]  # son alt-adımın düşük seviye aksiyonu
 
-        action_ally_aero = action
+        # --- İç döngü: aynı makroyu 'repeat' kez uygula ---
+        for sub_i in range(repeat):
+            # 3) Ally low-level action from command
+            s = self._get_observation()
+            if command == "track":
+                if sub_i == 0: print(f"ALLY applying TRACK (x{repeat})")
+                action = self.action_helper.track_cmd(s)
+            elif command == "evade":
+                if sub_i == 0: print(f"ALLY applying EVADE (x{repeat})")
+                #(s)
+                action = self.action_helper.evade_cmd(s)
+            elif command == "climb":
+                if sub_i == 0: print(f"ALLY applying CLIMB (x{repeat})")
+                action = self.action_helper.climb_cmd(s)
+            elif command == "fire":
+                if sub_i == 0: print("ALLY applying FIRE")
+                action = self.action_helper.fire_cmd(s)
+            elif command == "hold":
+                if sub_i == 0: print(f"ALLY applying HOLD (DO NOTHING) (x{repeat})")
+                action = [0, 0, 0, 0]
+            else:
+                action = [0, 0, 0, 0]
 
-        # Opponent davranışı
-        state_oppo = self._get_enemy_observation()
-        self.oppo.update(state_oppo)
-        oppo_action, oppo_cmd = self.oppo.behave()
-        action_enemy = oppo_action
+            action_ally_aero = action  # son alt-adımın aksiyonu
 
-        # Fiziğe uygula + füzeleri güncelle
-        self._apply_action(action_ally_aero, action_enemy)
-        self.missile_handler.refresh_missiles()
+            # 4) Opponent davranışı
+            state_oppo = self._get_enemy_observation()
+            self.oppo.update(state_oppo)
+            oppo_action, oppo_cmd = self.oppo.behave()
+            action_enemy = oppo_action
 
-        if self.fired:
-            self.fire_timer += 1
-            if self.fire_timer > self.fire_interval:
-                self.fire_timer = 0
-                self.fired = False
+            prev_ally_unfired_slots = len(self._unfired_slots(self.Plane_ID_ally))
 
-        # Yeni state’ler
-        n_state = self._get_observation()  # dict
-        n_state_oppo = self._get_enemy_observation()  # dict
+            # 5) Fiziğe uygula + füzeleri güncelle
+            self._apply_action(action_ally_aero, action_enemy)
+            self.missile_handler.refresh_missiles()
 
-        # Ödül/terminasyon
-        self._get_reward(self.state, effective_macro, n_state)
+            if self.fired:
+                self.fire_timer += 1
+                if self.fire_timer > self.fire_interval:
+                    self.fire_timer = 0
+                    self.fired = False
 
-        # Sonraki HOLD için makroyu hatırla
+            # 6) Yeni state’ler
+            n_state = self._get_observation()
+            n_state_oppo = self._get_enemy_observation()
+
+
+            curr_ally_unfired_slots = len(self._unfired_slots(self.Plane_ID_ally))
+
+            # 7) Reward (alt-adım)
+            self._get_reward(self.state, effective_macro, n_state,prev_ally_unfired_slots,curr_ally_unfired_slots)
+            acc_reward += float(self.reward)
+
+            # 8) Durum taşıma ve terminasyon
+            self.state = n_state
+            self.oppo_state = n_state_oppo
+            self._get_termination()
+            if self.done:
+                terminated = True
+                break  # erken bitiş
+
+        # --- Bu RL-step için toplam reward'u set et ---
+        self.reward = float(acc_reward)
+
+        # Son makroyu takip ıcın
         self._last_macro_cmd = effective_macro
 
-        # Env iç sayaçlar
-        self.state = n_state
-        self.oppo_state = n_state_oppo
-        self._get_termination()
-
-        # sayaçlar
+        # Sayaçlar (RL açısından tek step)
         self.steps_in_episode += 1
         self.episode_return += float(self.reward)
 
         info = {
-            "opponent_obs": n_state_oppo,
+            "opponent_obs": self.oppo_state,
             "success": self.success,
             "episode_success": self.episode_success,
             "now_missile_state": self.now_missile_state,
             "missile1_state": self.missile1_state,
             "n_missile1_state": self.n_missile1_state,
+            "macro_duration_used": repeat,
         }
 
-        terminated = bool(self.done)
-        truncated = False
-
-        # --- JSONL LOG: her step ---
+        # --- JSONL LOG ---
         self.logger.log_step({
             "event": "step",
             "action_macro_ally": int(effective_macro) if effective_macro is not None else None,
-            "command_ally": command,  # "track"/"evade"/"climb"/"fire"/None
-            "action_low_ally": action_ally_aero,  # [pitch, roll, yaw, trigger]
+            "command_ally": command,
+            "macro_duration_used": repeat,
+            "action_low_ally": action_ally_aero,
             "action_low_oppo": action_enemy,
             "oppo_cmd": oppo_cmd,
-            "obs": n_state,  # ally dict
+            "obs": self.state,
             "reward": float(self.reward),
-            "terminated": terminated,
-            "truncated": truncated,
-            "info": info,  # opponent_obs vs. içerir
+            "terminated": bool(self.done),
+            "truncated": False,
+            "info": info,
         })
 
-        # --- Epizot bitişinde özet + dosyayı kapat ---
-        if terminated or truncated:
+        # --- Epizot bitişinde özet ---
+        if bool(self.done) or truncated:
             self.logger.end_episode({
                 "episode_success": bool(self.episode_success),
                 "total_reward": float(self.episode_return),
                 "steps": int(self.steps_in_episode),
             })
 
-        return n_state, float(self.reward), terminated, truncated, info
+        return self.state, float(self.reward), bool(self.done), truncated, info
 
     # Legacy helper (kept intact semantics; returns dict now)
     def step_test(self, action):
@@ -380,6 +391,7 @@ class HarfangEnv(gym.Env):
             if ally_unfired_slots:
                 if self.fired == False:
                     df.fire_missile(self.Plane_ID_ally, min(ally_unfired_slots))
+                    self.missile_handler.refresh_missiles()
                     self.fired = True
                     self.now_missile_state = True
 
@@ -387,6 +399,7 @@ class HarfangEnv(gym.Env):
             oppo_unfired_slots = self._unfired_slots(self.Plane_ID_oppo)
             if oppo_unfired_slots:
                 df.fire_missile(self.Plane_ID_oppo, min(oppo_unfired_slots))
+                self.missile_handler.refresh_missiles()
 
         df.update_scene()
 
@@ -410,12 +423,12 @@ class HarfangEnv(gym.Env):
                     unfired.append(i)
         return unfired
 
-    def _get_reward(self, state, action, n_state):
+    def _get_reward(self, state, action, n_state,prev_ally_unfired_slots,curr_ally_unfired_slots):
         """
         Environment's reward.
         """
         self.reward = 0
-        self.success = 0
+        self.success = False
 
         # --- Damage-based rewards (proportional to health delta) --------------------------------------
         prev_ally = float(state.get("ally_health", 1.0))
@@ -510,28 +523,49 @@ class HarfangEnv(gym.Env):
         #self.reward -= c_t
         #---------------------------------------------------
 
-        # --- Too-far penalty -------------------------------------
-        D_far = 10000.0  # meters, threshold considered "too far"
-        penalty = 2.0  # per-step penalty if beyond D_far
-
-        d = float(state.get("distance_to_enemy", 0.0))
-
-        if d > D_far:
-            self.reward -= penalty
-            pass
+        # # --- Too-far penalty -------------------------------------
+        # D_far = 4500.0  # meters, threshold considered "too far"
+        # penalty = 2.0  # per-step penalty if beyond D_far
+        #
+        # d = float(state.get("distance_to_enemy", 0.0))
+        #
+        # if d > D_far:
+        #     self.reward -= penalty
+        #     pass
         #--------------------------------Successful FIRE-----------------------------------
-        ally_unfired_slots = self._unfired_slots(self.Plane_ID_ally)
 
-        if len(ally_unfired_slots) > 0:
-            if state.get("locked") == 1:
-                if action == CMD_FIRE:
+        # prev_unfired, curr_unfired: step() içinde pre/post slot sayıları
+        prev_unfired = int(prev_ally_unfired_slots)
+        curr_unfired = int(curr_ally_unfired_slots)
+
+        fired_delta = max(0, prev_unfired - curr_unfired)  # 0 veya 1
+        locked_pre = int(state.get("locked", 0))  # karar anındaki lock
+
+        if action == CMD_FIRE:
+            if prev_unfired <= 0:
+                # mühimmat yok
+                self.reward -= 25.0
+            elif locked_pre == 1:
+                if fired_delta > 0:
+                    # lock varken gerçekten fırlattı
+                    print('successful fire')
                     self.reward += 100
+
+                else:
+                    # lock var ama gate/cooldown engelledi
+                    self.reward -= 5.0
             else:
-                if action == CMD_FIRE:
-                    self.reward += -200
-        else:
-            if action == CMD_FIRE:
-                self.reward += -50
+                # lock yokken FIRE basmak: boşa deneme
+                self.reward -= 50.0
+        #----------------
+        # --- EVADE REWARD ---  ---------
+        mwr = int(state.get("mwr_signal", 0))  # karar anı (pre-state)
+
+        if action == CMD_EVADE:
+            if mwr == 1:
+                self.reward += 100/self.macro_durations.get("evade")  # tehdit varken kaçın: küçük pozitif
+            else:
+                self.reward -= 50/self.macro_durations.get("evade")  # tehdit yokken kaçınma: küçük negatif
 
         #-------------------------------------------------------------------
 
@@ -539,12 +573,14 @@ class HarfangEnv(gym.Env):
             self.reward += 1000
             print('enemy have fallen')
             self.success = True
+            self.episode_success = True
 
     def _get_termination(self):
 
         if self.oppo_health['health_level'] <= 0:
             self.done = True
             self.episode_success = True
+            self.success = True
         if self.ally_health['health_level'] <= 0.2:
             self.done = True
 
@@ -688,7 +724,11 @@ class HarfangEnv(gym.Env):
         missile1_state_val = 1 if self.n_missile1_state else -1
 
         # Vectorize incoming enemy missiles (absolute meters)
-        missile_vec = self._vectorize_missiles(self.get_enemy_missile_vector())
+        # Enemy missiles (list first, then vectorize)
+        enemy_missiles_air = self.get_enemy_missile_vector()
+        enemy_missile_in_air_count = int(len(enemy_missiles_air))
+        mwr_signal = float(1 if enemy_missile_in_air_count > 0 else 0)
+        missile_vec = self._vectorize_missiles(enemy_missiles_air)
 
         missile_count = len(self.get_ally_missile_vector())
 
@@ -749,7 +789,12 @@ class HarfangEnv(gym.Env):
             "plane_pitch_att": States[21],
             "relative_bearing": relative_bearing,
 
-            "missile_count": missile_count
+            "missile_count": missile_count,
+
+
+
+            "enemy_missile_in_air_count" : enemy_missile_in_air_count,
+            "mwr_signal": mwr_signal
         }
 
         # Expand missile scalars as missile_0.. missile_{N-1} for dict space stability
@@ -951,36 +996,41 @@ class HarfangEnv(gym.Env):
             })
         return missiles
 
-    # Public missile queries (unchanged semantics)
+    def _is_airborne(self, pos):
+        # Küçük toleransla uçuşta mı?
+        return (abs(pos[0]) > 1e-6) or (abs(pos[1]) > 1e-6) or (abs(pos[2]) > 1e-6)
+
     def get_enemy_missile_vector(self):
-        """List of dicts for all current enemy missiles."""
+        """List of dicts for all current enemy missiles (AIRBORNE ONLY)."""
         self.missile_handler.refresh_missiles()
         missile_info_list = []
         for mid in sorted(self.missile_handler.enemy_missiles):
             try:
-                state = df.get_missile_state(mid)
-                if not state.get("wreck", False):
+                st = df.get_missile_state(mid)
+                pos = list(st.get("position", [0.0, 0.0, 0.0])[:3])
+                if (not st.get("wreck", False)) and self._is_airborne(pos):
                     missile_info_list.append({
                         "missile_id": mid,
-                        "position": list(state["position"][:3]),
-                        "heading": state.get("heading", 0),
+                        "position": pos,
+                        "heading": st.get("heading", 0),
                     })
             except Exception:
                 pass
         return missile_info_list
 
     def get_ally_missile_vector(self):
-        """List of dicts for all current ally missiles."""
+        """List of dicts for all current ally missiles (AIRBORNE ONLY)."""
         self.missile_handler.refresh_missiles()
         missile_info_list = []
         for mid in sorted(self.missile_handler.ally_missiles):
             try:
-                state = df.get_missile_state(mid)
-                if not state.get("wreck", False):
+                st = df.get_missile_state(mid)
+                pos = list(st.get("position", [0.0, 0.0, 0.0])[:3])
+                if (not st.get("wreck", False)) and self._is_airborne(pos):
                     missile_info_list.append({
                         "missile_id": mid,
-                        "position": list(state["position"][:3]),
-                        "heading": state.get("heading", 0),
+                        "position": pos,
+                        "heading": st.get("heading", 0),
                     })
             except Exception:
                 pass

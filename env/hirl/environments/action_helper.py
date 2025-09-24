@@ -103,7 +103,7 @@ class ActionHelper:
         missiles = self._parse_missiles(state)
         altitude = state.get("altitude", 0.0) * 10000 if isinstance(state, dict) else state[14] * 10000
         heading = state.get("plane_heading", 0.0) if isinstance(state, dict) else state[19]
-
+        #print(missiles)
         # no threat → level flight
         if not missiles:
             return [0.0, 0.0, 0.0, 0.0]

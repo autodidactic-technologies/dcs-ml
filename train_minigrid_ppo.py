@@ -1,30 +1,161 @@
-# TODO:
-# yeni reward güncellememiz var. (yapıldı, etkisini görücez)
-# macro'ların duration'ı artırıcaz, macroların içine gömelim.
-# iç içe step function şeklinde olabilir
-# şimdilik sabit duration'lar verelim
-# implement ettikten sonra egitime bırakalım
+# harfang_train_predict_full_obs_tb_sync.py
+# - TensorBoard sync: ON
+# - No step= in wandb.log (avoids warning)
+# - Custom RL-step axes defined via run.define_metric
+# - Full obs rows appended EVERY env step; table flushed every TABLE_LOG_EVERY steps
+# - Episode-end one-row snapshot
+# - All W&B + TB files pinned to ephemeral dir (NOT OS temp) and deleted at run end
+# - Plus: WANDB_DIR, WANDB_CACHE_DIR, WANDB_DATA_DIR, TMP, TEMP all set to ephemeral paths
 
 import os
 import glob
 import argparse
 import time
-
-from click import progressbar
+import shutil
+import atexit
+import tempfile
+import numpy as np
+import yaml
 
 import wandb
-import gymnasium as gym
 import torch
 from stable_baselines3 import PPO
-from stable_baselines3.common.callbacks import CheckpointCallback
+from stable_baselines3.common.callbacks import CheckpointCallback, BaseCallback
 from wandb.integration.sb3 import WandbCallback
 
-import yaml
 from gymnasium.wrappers import TimeLimit, FlattenObservation
 from env.hirl.environments.HarfangEnv_GYM_new import HarfangEnv
 from env.hirl.environments import dogfight_client as df
+from stable_baselines3.common.monitor import Monitor
 
-'''# ------------------------------ ENV FACTORY ------------------------------ #'''
+# ------------------------------ CONFIG ------------------------------ #
+TABLE_LOG_EVERY = 200  # flush obs table to W&B every N env steps (1 = every step). Raised to reduce churn.
+
+# ------------------------------ EPHEMERAL W&B DIR ------------------------------ #
+def _make_ephemeral_wandb_dir():
+    base = os.path.abspath("wandb_ephemeral")
+    os.makedirs(base, exist_ok=True)
+    run_dir = tempfile.mkdtemp(prefix="run_", dir=base)
+    print("[W&B] Ephemeral run dir:", run_dir)
+    # subfolders we may need
+    for sub in ("tmp", "cache", "data", "tb"):
+        os.makedirs(os.path.join(run_dir, sub), exist_ok=True)
+    return run_dir
+
+def _cleanup_dir(path, retries=8, delay=0.5):
+    if not path or not os.path.exists(path):
+        return
+    for _ in range(retries):
+        try:
+            shutil.rmtree(path, ignore_errors=True)
+            if not os.path.exists(path):
+                print("[W&B] Cleaned:", path)
+                return
+        except Exception:
+            pass
+        time.sleep(delay)
+    if os.path.exists(path):
+        print("[W&B] WARN: could not remove:", path)
+
+_WANDB_EPHEMERAL_DIR = _make_ephemeral_wandb_dir()
+
+# Pin Python temp and W&B dirs to the ephemeral folder (prevents OS temp cleanups on Windows)
+tempfile.tempdir = os.path.join(_WANDB_EPHEMERAL_DIR, "tmp")
+os.makedirs(tempfile.tempdir, exist_ok=True)
+
+os.environ["WANDB_DIR"]       = _WANDB_EPHEMERAL_DIR
+os.environ["WANDB_CACHE_DIR"] = os.path.join(_WANDB_EPHEMERAL_DIR, "cache")
+os.environ["WANDB_DATA_DIR"]  = os.path.join(_WANDB_EPHEMERAL_DIR, "data")
+os.environ["TMP"]  = os.path.join(_WANDB_EPHEMERAL_DIR, "tmp")   # Windows temp
+os.environ["TEMP"] = os.path.join(_WANDB_EPHEMERAL_DIR, "tmp")
+
+atexit.register(lambda: _cleanup_dir(_WANDB_EPHEMERAL_DIR))
+
+# ------------------------------ SAFE LOG WRAPPER ------------------------------ #
+def safe_wandb_log(payload):
+    try:
+        wandb.log(payload)
+    except Exception as e:
+        print(f"[W&B WARN] log failed: {e}")
+
+# ------------------------------ FULL OBS CALLBACK ------------------------------ #
+class WandbFullObsLogger(BaseCallback):
+    """
+    TB sync ON version:
+      - Appends a row EVERY ENV STEP: [timestep, episode, *obs...]
+      - Flushes the growing table to W&B every `table_log_every` env steps
+      - Logs a one-row episode-end snapshot (last obs of that episode)
+      - Does NOT pass `step=` to wandb.log; includes 'train/rl_step' field
+    """
+    def __init__(self, table_log_every: int = TABLE_LOG_EVERY):
+        super().__init__()
+        self.table = None
+        self.keys = None
+        self.episode = 0
+        self._last_row = None
+        self._table_log_every = int(table_log_every)
+
+    def _safe_float(self, v):
+        try:
+            return float(v)
+        except Exception:
+            return float("nan")
+
+    def _on_step(self) -> bool:
+        dones = self.locals.get("dones", None)
+
+        # Pull dict from base env
+        try:
+            sd_list = self.training_env.get_attr("state_dict")
+            if not sd_list:
+                return True
+            sd = sd_list[0]  # single env
+        except Exception:
+            return True
+
+        # Lazy init
+        if self.table is None:
+            self.keys = sorted(list(sd.keys()))
+            self.table = wandb.Table(
+                columns=["timestep", "episode"] + self.keys,
+                log_mode="INCREMENTAL"
+            )
+
+        # Build row for THIS step
+        cur_step = int(self.num_timesteps)
+        row = [cur_step, int(self.episode)] + [self._safe_float(sd.get(k)) for k in self.keys]
+        self.table.add_data(*row)
+        self._last_row = row
+
+        # Periodic flush of the growing table
+        if (cur_step % self._table_log_every) == 0:
+            safe_wandb_log({
+                "train/rl_step": cur_step,
+                "train/obs_full_table": self.table,
+                "train/last_timestep": cur_step
+            })
+
+        # If any env finished -> episode-end snapshot
+        if dones is not None and np.any(dones):
+            ep_table = wandb.Table(columns=["timestep", "episode"] + self.keys, log_mode="MUTABLE")
+            ep_table.add_data(*self._last_row)
+            safe_wandb_log({
+                "train/rl_step": cur_step,
+                "train/obs_last_step_ep": ep_table
+            })
+            self.episode += int(np.sum(dones))
+        return True
+
+    def _on_training_end(self) -> None:
+        if self.table is not None:
+            cur_step = int(self.num_timesteps)
+            safe_wandb_log({
+                "train/rl_step": cur_step,
+                "train/obs_full_table_final": self.table,
+                "train/last_timestep": cur_step
+            })
+
+# ------------------------------ ENV FACTORY ------------------------------ #
 def make_env(max_steps: int = 5000, config_path: str = "env/local_config.yaml", port: int = None):
     """
     Creates and wraps the HARFANG environment.
@@ -46,39 +177,32 @@ def make_env(max_steps: int = 5000, config_path: str = "env/local_config.yaml", 
     # Connect once before env creation
     df.connect(ip, port_cfg)
     df.disable_log()
-    df.set_renderless_mode(not render)
+    df.set_renderless_mode(not render)  # correct passthrough
     df.set_client_update_mode(True)
 
-    # Dict obs -> Flatten for MlpPolicy, with time limit
+    # Dict obs -> Flatten for MlpPolicy, with time limit + monitor
     env = HarfangEnv()
     env.reset()
     env = FlattenObservation(env)
     env = TimeLimit(env, max_episode_steps=max_steps)
+    env = Monitor(env)
     return env
 
-
-'''# ------------------------------ UTILITIES ------------------------------ #'''
+# ------------------------------ UTILITIES ------------------------------ #
 def select_device():
     if hasattr(torch.backends, "mps") and torch.backends.mps.is_built() and torch.backends.mps.is_available():
         return torch.device("mps")
     if torch.backends.cuda.is_built() and torch.cuda.is_available():
         return torch.device("cuda")
     return torch.device("cpu")
+
 def list_models(models_dir: str):
-    """
-    Returns list of .zip models sorted by mtime (newest first).
-    """
     paths = glob.glob(os.path.join(models_dir, "*.zip"))
     paths = [(p, os.path.getmtime(p)) for p in paths]
     paths.sort(key=lambda x: x[1], reverse=True)
     return [p for p, _ in paths]
+
 def resolve_model_path(args) -> str:
-    """
-    Model selection logic for prediction:
-    1) If --model-path is provided and exists -> use it.
-    2) Else pick the Nth most recent model in --models-dir (default pick=0, i.e., latest).
-    3) If none exist -> raise a clear error.
-    """
     if args.model_path:
         if os.path.isfile(args.model_path):
             print(f"Loading model from explicit path: {args.model_path}")
@@ -97,9 +221,8 @@ def resolve_model_path(args) -> str:
         print(f"--pick={pick} is out of range (only {len(candidates)} models). Using latest instead.")
         pick = 0
 
-    # Show a friendly short list
     print("\nAvailable models (newest first):")
-    for i, p in enumerate(candidates[:10]):  # show top 10
+    for i, p in enumerate(candidates[:10]):
         t = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(os.path.getmtime(p)))
         marker = "<-- pick" if i == pick else ""
         print(f"  [{i}] {os.path.basename(p)}  |  {t}  {marker}")
@@ -107,53 +230,37 @@ def resolve_model_path(args) -> str:
     print(f"\nSelected model: {chosen}\n")
     return chosen
 
-
-'''# ------------------------------ ARG PARSER ------------------------------ #'''
+# ------------------------------ ARG PARSER ------------------------------ #
 def build_parser():
-    parser = argparse.ArgumentParser(description="Harfang PPO (train/predict) with W&B logging")
-
+    parser = argparse.ArgumentParser(description="Harfang PPO (train/predict) with W&B + TB sync + robust Tables")
     # Mode
-    parser.add_argument("--mode", choices=["train", "predict"], default="train",
-                        help="Run mode: train or predict")
-
-    # Env / rollout controls
-    parser.add_argument("--max-steps", type=int, default=5000,
-                        help="Max steps per episode (TimeLimit).")
-    parser.add_argument("--total-steps", type=int, default=2_000_000,
-                        help="Total training timesteps for PPO when --mode=train.")
-    parser.add_argument("--config-path", type=str, default="env/local_config.yaml",
-                        help="YAML config for environment connection/settings.")
-    parser.add_argument("--port", type=int, default=None,
-                        help="Override port from config file.")
-
+    parser.add_argument("--mode", choices=["train", "predict"], default="train", help="Run mode")
+    # Env / rollout
+    parser.add_argument("--max-steps", type=int, default=5000, help="Max steps per episode (TimeLimit).")
+    parser.add_argument("--total-steps", type=int, default=2_000_000, help="Total PPO timesteps for training.")
+    parser.add_argument("--config-path", type=str, default="env/local_config.yaml", help="Env YAML config path.")
+    parser.add_argument("--port", type=int, default=None, help="Override port from config file.")
     # Models
-    parser.add_argument("--models-dir", type=str, default="models",
-                        help="Directory to save/load models.")
-    parser.add_argument("--save-name", type=str, default="ppo_harfang_v3.zip",
-                        help="Final model filename for training.")
-    parser.add_argument("--model-path", type=str, default=None,
-                        help="(Predict) explicit path to a .zip model (overrides --pick).")
-    parser.add_argument("--pick", type=int, default=0,
-                        help="(Predict) pick Nth most recent model (0=latest).")
-
-    # Prediction settings
-    parser.add_argument("--episodes", type=int, default=5,
-                        help="(Predict) number of episodes to run.")
-    parser.add_argument("--deterministic", default=True, action="store_true",
-                        help="(Predict) use deterministic actions (default is stochastic).")
-
-    # WandB
+    parser.add_argument("--models-dir", type=str, default="models", help="Directory to save/load models.")
+    parser.add_argument("--save-name", type=str, default="ppo_harfang_v3.zip", help="Final model filename.")
+    parser.add_argument("--model-path", type=str, default=None, help="(Predict) explicit model path.")
+    parser.add_argument("--pick", type=int, default=0, help="(Predict) pick Nth most recent model (0=latest).")
+    # Prediction
+    parser.add_argument("--episodes", type=int, default=5, help="(Predict) number of episodes to run.")
+    parser.add_argument("--deterministic", action="store_true", help="(Predict) use deterministic actions.")
+    # W&B
     parser.add_argument("--project", type=str, default="Harfang_PURE_RL")
     parser.add_argument("--entity", type=str, default="BILGEM_DCS_RL")
     parser.add_argument("--run-name", type=str, default=None)
-
+    # Logging throttle
+    parser.add_argument("--table-log-every", type=int, default=TABLE_LOG_EVERY,
+                        help="Flush obs table to W&B every N steps (1 = every step).")
     return parser
 
-'''# ------------------------------ MAIN ------------------------------ #'''
+# ------------------------------ MAIN ------------------------------ #
 def main():
     args = build_parser().parse_args()
 
-    # Device
     device = select_device()
     print("Using device:", device)
 
@@ -176,43 +283,57 @@ def main():
                 "device": str(device),
                 "total_timesteps": int(args.total_steps),
                 "max_steps": int(args.max_steps),
+                "table_log_every": int(args.table_log_every),
             },
-            sync_tensorboard=True,
+            sync_tensorboard=True,          # keep TB sync ON
+            dir=_WANDB_EPHEMERAL_DIR,       # W&B files under ephemeral dir (and env vars set)
+            save_code=False,
         )
+        # Define RL step axis for our metrics
+        run.define_metric("train/*", step_metric="train/rl_step")
+
+        # Put TB logs under ephemeral dir too (auto-cleaned)
+        tb_dir = os.path.join(_WANDB_EPHEMERAL_DIR, "tb")
 
         model = PPO(
             "MlpPolicy",
             env,
+            n_steps=256,
             verbose=1,
-            tensorboard_log="./ppo_logs/",
+            tensorboard_log=tb_dir,   # TB sync will pick these up
             device=device
         )
 
         # Callbacks
         wandb_callback = WandbCallback(
-            gradient_save_freq=1000,
+            gradient_save_freq=20,
             model_save_path=None,
             verbose=2
         )
         checkpoint_callback = CheckpointCallback(
-            save_freq=100_000,
-            save_path=args.models_dir,   # consistent relative path
-            name_prefix="ppo_harfang_v4_checkpoint"
+            save_freq=10_000,
+            save_path=args.models_dir,
+            name_prefix=args.save_name + "_checkpoint"
         )
+        obs_cb = WandbFullObsLogger(table_log_every=int(args.table_log_every))
 
-        # Train (SB3 logs to TensorBoard; W&B syncs TB scalars automatically)
+        # Train
         model.learn(
             total_timesteps=int(args.total_steps),
-            callback=[checkpoint_callback, wandb_callback],
+            callback=[checkpoint_callback, wandb_callback, obs_cb],
+            log_interval=1,
             progress_bar=True
         )
 
-        # Save final model
+        # Save final model (NOT ephemeral)
         final_path = os.path.join(args.models_dir, args.save_name)
         model.save(final_path)
         print(f"\n✅ PPO model saved to: {final_path}")
         wandb.summary["final_model_path"] = final_path
+
         run.finish()
+        # Clean ephemeral W&B dir
+        _cleanup_dir(_WANDB_EPHEMERAL_DIR)
 
     # --------------------------- PREDICT --------------------------- #
     elif args.mode == "predict":
@@ -230,8 +351,14 @@ def main():
                 "deterministic": bool(args.deterministic),
                 "model_path": model_path,
                 "max_steps": int(args.max_steps),
+                "table_log_every": int(args.table_log_every),
             },
+            sync_tensorboard=True,     # TB sync ON
+            dir=_WANDB_EPHEMERAL_DIR,
+            save_code=False,
         )
+        # Define RL step axis for predict metrics
+        run.define_metric("predict/*", step_metric="predict/rl_step")
 
         model = PPO.load(model_path, device=device)
         print(f"✅ Model loaded from {model_path}\n")
@@ -239,6 +366,12 @@ def main():
 
         global_step = 0
         start_wall = time.time()
+
+        # Per-run full-obs table (incremental)
+        pred_table = None
+        pred_keys = None
+        last_row = None
+        LOG_EVERY = max(1, int(args.table_log_every))
 
         for ep in range(1, int(args.episodes) + 1):
             obs, info = env.reset()
@@ -248,38 +381,67 @@ def main():
             ep_start = time.time()
 
             while not (done or truncated):
-                # Default SB3 behavior: deterministic=False unless flag is passed
-                action, _ = model.predict(obs, deterministic=args.deterministic)
+                # Keep predict aligned with training by default
+                action, _ = model.predict(obs, deterministic=False)
                 obs, reward, done, truncated, info = env.step(action)
 
-                # per-step logging
+                cur_step = int(global_step)
+
+                # Full obs dict → table row
+                sd = getattr(env.unwrapped, "state_dict", None)
+                if sd is not None:
+                    if pred_table is None:
+                        pred_keys = sorted(list(sd.keys()))
+                        pred_table = wandb.Table(
+                            columns=["timestep", "episode"] + pred_keys,
+                            log_mode="INCREMENTAL"
+                        )
+                    row = [cur_step, int(ep)] + [float(sd.get(k, np.nan)) for k in pred_keys]
+                    pred_table.add_data(*row)
+                    last_row = row
+
+                    # Periodic flush
+                    if (cur_step % LOG_EVERY) == 0:
+                        safe_wandb_log({"predict/rl_step": cur_step, "predict/obs_full_table": pred_table})
+
+                # Per-step scalars
                 ep_reward += float(reward)
                 steps += 1
-                global_step += 1
-                wandb.log({
+                safe_wandb_log({
+                    "predict/rl_step": cur_step,
                     "predict/step_reward": float(reward),
-                    "predict/global_step": global_step,
+                    "predict/global_step": cur_step,
                 })
+
+                global_step += 1  # increment at end to keep cur_step consistent
+
+            # Episode end snapshot
+            if last_row is not None:
+                ep_table = wandb.Table(columns=["timestep", "episode"] + pred_keys, log_mode="MUTABLE")
+                ep_table.add_data(*last_row)
+                safe_wandb_log({"predict/rl_step": int(global_step), "predict/obs_last_step_ep": ep_table})
 
             ep_time = time.time() - ep_start
             fps = steps / ep_time if ep_time > 0 else 0.0
 
-            # per-episode logging
-            wandb.log({
+            # Per-episode scalars
+            safe_wandb_log({
+                "predict/rl_step": int(global_step),
                 "predict/episode": ep,
                 "predict/episode_return": ep_reward,
                 "predict/episode_length": steps,
-                "predict/episode_success": info.get("success"),
+                "predict/episode_success": int(info.get("success")),
                 "predict/episode_fps": fps,
                 "predict/mean_reward_per_step": (ep_reward / max(1, steps)),
             })
-            print(f"Episode {ep}/{args.episodes} -> steps={steps}  reward={ep_reward:.3f}  fps={fps:.1f}")
+            scss = int(info.get("success"))
+            print(f"Episode: {ep} | Reward: {ep_reward}.2f | Steps: {steps} | Success: {scss}")
 
         total_wall = time.time() - start_wall
         wandb.summary["predict/total_wall_time_sec"] = total_wall
         run.finish()
+        _cleanup_dir(_WANDB_EPHEMERAL_DIR)
         print("✅ Prediction finished.")
-
 
 if __name__ == "__main__":
     main()
