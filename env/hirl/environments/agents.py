@@ -257,13 +257,22 @@ class Oppo(Agents):
                     action = self.action_helper.climb_cmd(s)
                     command = "climb"
                 elif threat and (d <= self._MID_EVADE_R):
+                    # if self._step % 2 == 0:
                     # medium threat but not critical → still press (offensive bias)
                     action = self.action_helper.track_cmd(s)
                     command = "track"
+                    # else:
+                    #     action = [0, 0, 0, 0]
+                    #     command = "hold"
                 else:
+                    # if self._step % 2 == 0:
                     # default: press/track to close and maintain pressure
                     action = self.action_helper.track_cmd(s)
                     command = "track"
+                    # else:
+                    #     action = [0,0,0,0]
+                    #     command = "hold"
+
 
         if self.debug and (self._step % 30 == 0):
             print(f"[OPPO] t={self._step:05d} d={d:6.0f} alt={alt:5.0f} lock={int(locked)} thr={int(threat)} cmd={command}")

@@ -225,14 +225,14 @@ class HarfangEnv(gym.Env):
             command = "track"
         # TODO: dont forget this trick
         elif effective_macro == CMD_EVADE:
-            command = "track"
+            command = "evade"
         elif effective_macro == CMD_CLIMB:
             command = "climb"
         elif effective_macro == CMD_FIRE:
             command = "fire"
         # TODO: dont forget this trick
         elif effective_macro == CMD_HOLD:
-            command = "track"
+            command = "hold"
         elif effective_macro is None:
             command = None
         else:
@@ -734,7 +734,7 @@ class HarfangEnv(gym.Env):
 
         missile_count = len(self.get_ally_missile_vector()) # ally missiles in air
 
-        # ally_unfired_slots_=len(self._unfired_slots(self.Plane_ID_ally))
+        ally_unfired_slots_=len(self._unfired_slots(self.Plane_ID_ally))
 
         # Build flat vector to reuse existing index map where needed
         States = np.concatenate((
@@ -794,7 +794,7 @@ class HarfangEnv(gym.Env):
             "relative_bearing": relative_bearing,
 
             "missile_count": missile_count, # ally missiles in air
-            # "ally_unfired_slots": ally_unfired_slots_, # number of unfired missiles
+            "ally_unfired_slots": ally_unfired_slots_, # number of unfired missiles
 
 
 

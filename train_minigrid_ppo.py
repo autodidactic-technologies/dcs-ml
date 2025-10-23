@@ -207,8 +207,9 @@ harfang_agent = HarfangAgent(llm=llm, verbose=True)
 
 '''# ------------------------------ OVERRIDE-PATCH ------------------------------ #'''
 # --- LLM override every N steps, buffer-safe ---
+OVERRIDE_EVERY = 4
 
-def patch_policy_forward_with_llm(model, override_agent, override_every=4, env_name="Harfang"):
+def patch_policy_forward_with_llm(model, override_agent, override_every=OVERRIDE_EVERY, env_name="Harfang"):
     """
     PPO policy.forward is patched.
     Every N steps (override_every), PPO's action is overridden by LLM's suggestion.
@@ -349,6 +350,7 @@ def build_parser():
     parser.add_argument("--project", type=str, default="Harfang_PURE_RL")
     parser.add_argument("--entity", type=str, default="BILGEM_DCS_RL")
     parser.add_argument("--run-name", type=str, default=None)
+    parser.add_argument("--resume", type=str, default=False, help="Resume previous run.")
     # Logging throttle
     parser.add_argument("--table-log-every", type=int, default=TABLE_LOG_EVERY,
                         help="Flush obs table to W&B every N steps (1 = every step).")
@@ -392,20 +394,21 @@ def main():
         # Put TB logs under ephemeral dir too (auto-cleaned)
         tb_dir = os.path.join(_WANDB_EPHEMERAL_DIR, "tb")
 
-        # model = PPO(
-        #     "MlpPolicy",
-        #     env,
-        #     n_steps=256,
-        #     verbose=1,
-        #     tensorboard_log=tb_dir,
-        #     device=device
-        # )
-
-        model_path = r'C:\Users\fisne\OneDrive\Desktop\dcs-ml\models\ppo_harfang_RL-LLM_test06.zip'
-        # ppo_harfang_v14_15-09-2025_01.zip -> Pure RL checkpoint
-        model = PPO.load(model_path, env=env, device=device)
-        # model.env = env
-        print(f"✅ Starting training from {model_path}\n")
+        if args.resume == False:
+            model = PPO(
+                "MlpPolicy",
+                env,
+                n_steps=256,
+                verbose=1,
+                tensorboard_log=tb_dir,
+                device=device
+            )
+        else:
+            model_path = r'C:\Users\fisne\OneDrive\Desktop\dcs-ml\models\ppo_harfang_RL-LLM_test06.zip'
+            # ppo_harfang_v14_15-09-2025_01.zip -> Pure RL checkpoint
+            model = PPO.load(model_path, env=env, device=device)
+            # model.env = env
+            print(f"✅ Starting training from {model_path}\n")
 
 
 
@@ -426,7 +429,7 @@ def main():
         if args.LLM_assist:
             patch_policy_forward_with_llm(model,
                                           override_agent=harfang_agent,
-                                          override_every=4,
+                                          override_every=OVERRIDE_EVERY,
                                           env_name="Harfang") # OVERRIDE PATCH
 
 

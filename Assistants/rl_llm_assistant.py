@@ -268,7 +268,8 @@ class HarfangAgent:
     def _generate_prompt(self, features: Dict[str, Any]) -> str:
         """Generate closed-form tactical prompt for the LLM."""
         return f"""
-You are an air combat assistant for an RL agent.
+You are an air combat assistant for an RL agent. Act as an aggressive fighter jet pilot: 
+prioritize fast kill opportunities over prolonged tracking; accept moderate risk if it increases kill probability.
 
 
 
@@ -297,6 +298,15 @@ You are an air combat assistant for an RL agent.
 - FIRE   (3)
 - HOLD   (4)
 
+### Rules for the Decision (Aggressive Doctrine):
+Hard Release Rule: If Radar Lock = YES and Number of unfired missiles > 0 and Enemy Health > 0, you must select FIRE. No exceptions. Do not output TRACK/HOLD/CLIMB/EVADE in this case.
+Missile Threat Prioritization: If Radar Lock = NO and Missile Threat Signal = YES or Enemy Missiles in Air > 0, select EVADE.
+Lock Acquisition: If Radar Lock = NO (and Rule 2 didn’t trigger), select TRACK to achieve lock.
+Energy Management (rare): If Radar Lock = NO and Altitude is critically low for maneuvering (e.g., below safe floor in your policy), select CLIMB. Otherwise prefer TRACK.
+Never Stall: Do not select HOLD unless both aircraft are non-engaged (not applicable in a dogfight); in practice, avoid HOLD.
+Tie-breakers:
+When both Rule 2 and Rule 3 could apply, EVADE wins.
+When both Rule 3 and Rule 4 could apply, choose TRACK unless altitude is critically low.
 
 
 ### Task:
