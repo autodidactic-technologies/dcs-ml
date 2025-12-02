@@ -5,3 +5,4 @@
     2. Determine num_episodes in eval_rl_agent.py, then run eval_rl_agent.py to test trained PPO Agent.
     3. Determine num_episodes and llm_frequency in rl_llm_test.py, then run rl_llm_test.py
        to test E-greedy RL-LLM Algorithm on MiniGrid.
+    4. E-Greedy RL-LLM Algorithm on MiniGrid checkouted to gym-goal-stable
