@@ -5,7 +5,7 @@ from pathlib import Path
 import gym
 import numpy as np
 import torch
-from torch.utils.tensorboard import SummaryWriter  # <--- EKLENDİ
+import wandb
 
 import gym_goal  # registers Goal-v0
 from gym_goal.wrappers import GoalObsActionWrapper
@@ -49,21 +49,24 @@ def parse_args():
     p.add_argument('--sarsa-json', type=str, default='',
                    help='Path to JSONL file to log SARSA transitions (if empty, disabled)')
     p.add_argument('--resume', type=str, default='', help='Path to a checkpoint to resume training from')
-    p.add_argument('--exp-name', type=str, default='exp_01', help='Experiment name for Tensorboard')  # <--- EKLENDİ
+    p.add_argument('--exp-name', type=str, default='exp_01', help='Experiment name for WandB')  # <--- GÜNCELLENDİ
     return p.parse_args()
 
 
 def main():
     args = parse_args()
 
-    # --- TENSORBOARD SETUP ---
+    # --- WANDB SETUP (TENSORBOARD YERİNE) ---
     run_name = f"{args.exp_name}_{args.seed}_{int(time.time())}"
-    writer = SummaryWriter(f"runs/{run_name}")
-    writer.add_text(
-        "hyperparameters",
-        "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
+
+    wandb.init(
+        project="gym-goal-ppo",  # Senin belirlediğin proje ismi
+        name=run_name,  # Run ismi (örn: exp_01_1_17123...)
+        config=vars(args),  # Tüm hiperparametreleri otomatik kaydeder
+        monitor_gym=False,  # Video kaydını şimdilik kapalı tutuyoruz (hız için)
+        save_code=True,  # Kodun o anki halini de buluta yedekler
     )
-    # -------------------------
+    # ----------------------------------------
 
     device = torch.device(args.device)
     np.random.seed(args.seed)
@@ -187,11 +190,12 @@ def main():
                 env.render()
 
             if done:
-                # --- LOG EPISODIC RETURN ---
-                # Her oyun bittiğinde skoru grafiğe basıyoruz
-                writer.add_scalar("charts/episodic_return", ep_ret, global_steps)
-                writer.add_scalar("charts/episodic_length", ep_len, global_steps)
-                # ---------------------------
+                # --- LOG EPISODIC RETURN TO WANDB ---
+                wandb.log({
+                    "charts/episodic_return": ep_ret,
+                    "charts/episodic_length": ep_len,
+                }, step=global_steps)
+                # ------------------------------------
 
                 # Finish SARSA record for terminal step (no a_next)
                 if sarsa_logger and sarsa_pending is not None:
@@ -250,15 +254,17 @@ def main():
             buf.reset()
             update_idx += 1
 
-            # --- LOG TRAINING STATS ---
-            # Ajan güncellendikçe loss değerlerini grafiğe basıyoruz
-            writer.add_scalar("losses/total_loss", stats.get('loss', 0), global_steps)
-            writer.add_scalar("losses/value_loss", stats.get('v_loss', 0), global_steps)
-            writer.add_scalar("losses/policy_loss", stats.get('pg_loss', 0), global_steps)
-            writer.add_scalar("losses/entropy", stats.get('entropy', 0), global_steps)
-            writer.add_scalar("losses/approx_kl", stats.get('approx_kl', 0), global_steps)
-            writer.add_scalar("charts/SPS", int(global_steps / (time.time() - start_t + 1e-8)), global_steps)
-            # --------------------------
+            # --- LOG TRAINING STATS TO WANDB ---
+            fps = int(global_steps / (time.time() - start_t + 1e-8))
+            wandb.log({
+                "losses/total_loss": stats.get('loss', 0),
+                "losses/value_loss": stats.get('v_loss', 0),
+                "losses/policy_loss": stats.get('pg_loss', 0),
+                "losses/entropy": stats.get('entropy', 0),
+                "losses/approx_kl": stats.get('approx_kl', 0),
+                "charts/SPS": fps,
+            }, step=global_steps)
+            # -----------------------------------
 
             if update_idx % args.save_every == 0:
                 ckpt_path = outdir / f'checkpoint_{update_idx:05d}.pt'
@@ -290,7 +296,6 @@ def main():
                     )
 
             if (update_idx % 1) == 0:
-                fps = int(global_steps / (time.time() - start_t + 1e-8))
                 print(
                     f"Update {update_idx} | steps {global_steps}/{args.total_steps} | loss {stats.get('loss', 0):.3f} | "
                     f"fps {fps}")
@@ -298,7 +303,7 @@ def main():
             break
 
     env.close()
-    writer.close()  # <--- EKLENDİ
+    wandb.finish()  # <--- EKLENDİ
 
 
 if __name__ == '__main__':

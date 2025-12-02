@@ -331,7 +331,7 @@ class PPOAgent:
 
                 # Evaluate current logprob and value using padded params;
                 # the network slices to the correct per-branch dimension internally.
-                logp, entropy, value = self.ac.evaluate_actions(obs_b, aidx_b, params_b)
+                logp, ent_disc, ent_cont, value = self.ac.evaluate_actions(obs_b, aidx_b, params_b)
 
                 ratio = (logp - old_logp_b).exp()
                 approx_kl = (old_logp_b - logp).mean().item()
@@ -349,7 +349,7 @@ class PPOAgent:
                 v_loss_clipped = (v_pred_clipped - ret_b).pow(2)
                 v_loss = 0.5 * torch.max(v_loss_unclipped, v_loss_clipped).mean()
 
-                ent_loss = -entropy.mean()
+                ent_loss = -ent_disc.mean()
 
                 loss = pg_loss + self.vf_coef * v_loss + self.ent_coef * ent_loss
 
