@@ -1,6 +1,9 @@
 -- Set package paths
-package.path = package.path .. ";C:/Users/autodidactic/AppData/Roaming/luarocks/share/lua/5.1/?.lua"
-package.cpath = package.cpath .. ";C:/Users/autodidactic/AppData/Roaming/luarocks/lib/lua/5.1/?.dll"
+package.path = package.path .. ";C:/Users/aliko/AppData/Roaming/luarocks/share/lua/5.1/?.lua"
+package.cpath = package.cpath .. ";C:/Users/aliko/AppData/Roaming/luarocks/lib/lua/5.1/socket/?.dll"
+
+-- package.path = package.path .. ";C:/Users/autodidactic/AppData/Roaming/luarocks/share/lua/5.1/?.lua"
+-- package.cpath = package.cpath .. ";C:/Users/autodidactic/AppData/Roaming/luarocks/lib/lua/5.1/?.dll" 
 
 local socket = require("socket")
 
