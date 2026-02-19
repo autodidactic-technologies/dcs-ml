@@ -10,6 +10,7 @@ conda create -n dcs-ml python=3.8
 conda activate dcs-ml
 
 # Install required packages
+cd mock_env
 pip install -r requirements.txt
 ```
 
