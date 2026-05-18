@@ -40,10 +40,17 @@ function LuaExportAfterNextFrame()
 --     local f15_tws = LoGetF15_TWS_Contacts() or 0
 --     local sighting = LoGetSightingSystemInfo() or 0
 --     local wing_targets = LoGetWingTargets() or 0
-    log.write("Export.lua", log.INFO, "✅ Sending Airspeed: " .. IAS)
+    log.write("Export.lua", log.INFO, "✅ Sending IndicatedAirSpeed: " .. IAS)
+    log.write("Export.lua", log.INFO, "✅ Sending AltitudeAboveGroundLeve: " .. RALT)
+    log.write("Export.lua", log.INFO, "✅ Sending AngleOfAttack: " .. AoA)
+    --log.write("Export.lua", log.INFO, "✅ Sending AltitudeAboveSeaLevel: " .. altbar)
+    log.write("Export.lua", log.INFO, "✅ Sending Pitch: " .. pitch)
+    log.write("Export.lua", log.INFO, "✅ Sending Bank: " .. bank)
+    log.write("Export.lua", log.INFO, "✅ Sending Yaw: " .. yaw)
+    
 
 --     MySocket:send(string.format("IAS: %.4f  RALT: %.4f AoA: %.4f altbar: %.4f pitch: %.4f bank: %.4f yaw: %.4f tws: %.4f target info: %.4f locked: %.4f f15: %.4f sighting: %.4f wing: %.4f\n", IAS, RALT, AoA, altBar,pitch, bank,yaw, tws, target_info, locked_target_info, f15_tws, sighting, wing_targets))
-    MySocket:send(string.format("IAS: %.4f  RALT: %.4f AoA: %.4f altbar: %.4f pitch: %.4f bank: %.4f yaw: %.4f\n", IAS, RALT, AoA, altBar,pitch, bank,yaw))
+    MySocket:send(string.format("IndicatedAirSpeed: %.4f  AltitudeAboveGroundLeve: %.4f AngleOfAttack: %.4f     Pitch: %.4f Bank: %.4f Yaw: %.4f\n", IAS, RALT, AoA,pitch, bank,yaw))
 end
 
 function LuaExportStop()
