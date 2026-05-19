@@ -12,6 +12,13 @@ local MySocket = nil
 local IPAddress = "127.0.0.1"
 local Port = 5005  -- Ensure your listener is using this port
 
+-- Maneuver state
+local maneuverStarted = false
+local maneuverStartTime = nil
+local straightDuration = 15.0
+local maneuverDuration = 2.0
+
+
 function LuaExportStart()
     log.write("Export.lua", log.INFO, "✅ Starting Lua Export")
 
@@ -51,6 +58,24 @@ function LuaExportAfterNextFrame()
 
 --     MySocket:send(string.format("IAS: %.4f  RALT: %.4f AoA: %.4f altbar: %.4f pitch: %.4f bank: %.4f yaw: %.4f tws: %.4f target info: %.4f locked: %.4f f15: %.4f sighting: %.4f wing: %.4f\n", IAS, RALT, AoA, altBar,pitch, bank,yaw, tws, target_info, locked_target_info, f15_tws, sighting, wing_targets))
     MySocket:send(string.format("IndicatedAirSpeed: %.4f  AltitudeAboveGroundLeve: %.4f AngleOfAttack: %.4f     Pitch: %.4f Bank: %.4f Yaw: %.4f\n", IAS, RALT, AoA,pitch, bank,yaw))
+
+
+     -- DIRECT CONTROL MANEUVER
+    local simTime = LoGetModelTime()
+    if not maneuverStarted then
+        if simTime >= straightDuration then
+            maneuverStarted = true
+            maneuverStartTime = simTime
+            log.write("Export.lua", log.INFO, "Starting left bank...")
+        end
+    else
+        local elapsed = simTime - maneuverStartTime
+        if elapsed < maneuverDuration then
+            LoSetCommand(2002, -1.0)  -- full left roll
+        else
+            LoSetCommand(2002, 0.0)   -- neutral
+        end
+    end
 end
 
 function LuaExportStop()
