@@ -351,30 +351,18 @@ function LuaExportActivityNextEvent(t)
     -- 21. Object by ID
     -- ---------------------------------------------------------
     log.write("Export", log.INFO, "--- OBJECT BY ID ---")
-    -- First, get IDs from targets/wingmen to look up
-    local targets = LoGetTargetInformation()
-    if targets then
-        for i, trg in ipairs(targets) do
-            if trg.ID and trg.ID > 0 then
-                local objById = LoGetObjectById(trg.ID)
-                if objById then
-                    log_table("ObjectByID_Target"..i, objById)
-                end
-            end
+    -- Test with your own aircraft (always available)
+    local selfId = LoGetPlayerPlaneId()
+    if selfId then
+        log_kv("LookingUp_ID", selfId)
+        local objById = LoGetObjectById(selfId)
+        if objById then
+            log_table("ObjectByID_Self", objById)
+        else
+            log_str("ObjectByID_Self", "nil")
         end
-    end
-    
-    -- Also look up locked targets
-    local locked = LoGetLockedTargetInformation()
-    if locked then
-        for i, trg in ipairs(locked) do
-            if trg.ID and trg.ID > 0 then
-                local objById = LoGetObjectById(trg.ID)
-                if objById then
-                    log_table("ObjectByID_Locked"..i, objById)
-                end
-            end
-        end
+    else
+        log_str("PlayerPlaneId", "nil")
     end
 
     -- ---------------------------------------------------------
