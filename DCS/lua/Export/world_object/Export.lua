@@ -1,9 +1,3 @@
--- Set package paths
-package.path = package.path .. ";C:/Users/aliko/AppData/Roaming/luarocks/share/lua/5.1/?.lua"
-package.cpath = package.cpath .. ";C:/Users/aliko/AppData/Roaming/luarocks/lib/lua/5.1/socket/?.dll"
-
-local socket = require("socket")
-
 -- Helper: log one name=value pair (value can be nil)
 local function log_kv(name, value)
     if value == nil then
@@ -96,19 +90,6 @@ function LuaExportActivityNextEvent(t)
         log_kv("Ballistic_Total", count)
     else
         log_str("Ballistic", "nil")
-    end
-    
-    -- Airdromes/airfields
-    local airdromes = LoGetWorldObjects("airdromes")
-    if airdromes then
-        local count = 0
-        for id, obj in pairs(airdromes) do
-            count = count + 1
-            log_table("Airdrome_" .. id, obj)
-        end
-        log_kv("Airdromes_Total", count)
-    else
-        log_str("Airdromes", "nil")
     end
     
     return t + 10.0
