@@ -1,6 +1,6 @@
 Copy the log file from docker to host
 -------------------------------
-docker cp dcs-wine11-p1:/home/lutris/.wine/drive_c/users/lutris/Saved Games/DCS/Logs/dcs.log ~/Desktop
+docker cp dcs-wine11-p1:"/home/lutris/.wine/drive_c/users/lutris/Saved Games/DCS/Logs/dcs.log" ~/Desktop
 
 Copy Export.lua file from host to docker
 ----------------------------------------
