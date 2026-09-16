@@ -4,4 +4,5 @@ docker cp dcs-wine11-p1:/home/lutris/.wine/drive_c/users/lutris/Saved Games/DCS/
 
 Copy Export.lua file from host to docker
 ----------------------------------------
-docker cp ~/Desktop dcs-wine11-p1:/home/lutris/.wine/drive_c/users/lutris/Saved Games/DCS/Scripts
+docker cp Export.lua "dcs-wine11-p1:/home/lutris/.wine/drive_c/users/lutris/Saved Games/DCS/Scripts"
+
