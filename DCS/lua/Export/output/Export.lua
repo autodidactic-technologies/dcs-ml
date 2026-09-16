@@ -1,6 +1,6 @@
 local function log_value(name, value, depth)
     depth = depth or 0
-    if depth > 3 then return end -- prevent infinite recursion
+    if depth > 6 then return end -- prevent infinite recursion
 
     if type(value) == "table" then
         for k, v in pairs(value) do
