@@ -1,401 +1,263 @@
--- Set package paths
-package.path = package.path .. ";C:/Users/aliko/AppData/Roaming/luarocks/share/lua/5.1/?.lua"
-package.cpath = package.cpath .. ";C:/Users/aliko/AppData/Roaming/luarocks/lib/lua/5.1/socket/?.dll"
+local function log_value(name, value, depth)
+    depth = depth or 0
+    if depth > 3 then return end -- prevent infinite recursion
 
-local socket = require("socket")
-
--- Helper: log one name=value pair (value can be nil)
-local function log_kv(name, value)
-    if value == nil then
+    if type(value) == "table" then
+        for k, v in pairs(value) do
+            log_value(name .. "_" .. tostring(k), v, depth + 1)
+        end
+    elseif value == nil then
         log.write("Export", log.INFO, name .. " = nil")
     elseif type(value) == "number" then
         log.write("Export", log.INFO, string.format("%s = %.4f", name, value))
-    elseif type(value) == "boolean" then
-        log.write("Export", log.INFO, string.format("%s = %s", name, tostring(value)))
-    else
-        log.write("Export", log.INFO, string.format("%s = %s", name, tostring(value)))
-    end
-end
-
--- Helper: log string value (e.g., modes, names)
-local function log_str(name, value)
-    if value == nil then
-        log.write("Export", log.INFO, name .. " = nil")
-    else
+    else -- boolean, string, or anything else
         log.write("Export", log.INFO, name .. " = " .. tostring(value))
     end
 end
 
--- Helper: log a table recursively with prefix
-local function log_table(prefix, tbl, depth)
-    depth = depth or 0
-    if depth > 3 then return end -- prevent infinite recursion
-    
-    if type(tbl) ~= "table" then
-        log_kv(prefix, tbl)
-        return
-    end
-    
-    for k, v in pairs(tbl) do
-        local key = prefix .. "_" .. tostring(k)
-        if type(v) == "table" then
-            log_table(key, v, depth + 1)
-        elseif type(v) == "number" then
-            log_kv(key, v)
-        elseif type(v) == "boolean" then
-            log_str(key, v)
-        else
-            log_str(key, v)
-        end
-    end
-end
-
 function LuaExportStart()
-    log.write("Export", log.INFO, "=== Export started ===")
-    -- Plan low-frequency event every 2 seconds
-    LoCreateCoroutineActivity(1, 2.0, 2.0)
-    Coroutines = {}
-    Coroutines[1] = coroutine.create(LuaExportActivityNextEvent)
+    log.write("Export", log.INFO, "=== EXPORT STARTED ===")
 end
 
--- =============================================================================
--- HIGH FREQUENCY (every frame)
--- =============================================================================
 function LuaExportAfterNextFrame()
     -- Check what data is currently available
     log.write("Export", log.INFO, "--- EXPORT PERMISSIONS ---")
-    log_str("Export_ObjectsAllowed", LoIsObjectExportAllowed())
-    log_str("Export_SensorAllowed", LoIsSensorExportAllowed())
-    log_str("Export_OwnshipAllowed", LoIsOwnshipExportAllowed())
+    log_value("LoIsObjectExportAllowed", LoIsObjectExportAllowed())
+    log_value("LoIsSensorExportAllowed", LoIsSensorExportAllowed())
+    log_value("LoIsOwnshipExportAllowed", LoIsOwnshipExportAllowed())
 
     -- ---------------------------------------------------------
-    -- 1. Time & Identity
+    -- Time & Identity
     -- ---------------------------------------------------------
     log.write("Export", log.INFO, "--- TIME & IDENTITY ---")
-    log_kv("ModelTime", LoGetModelTime())
-    log_kv("MissionStartTime", LoGetMissionStartTime())
-    log_str("PilotName", LoGetPilotName())
-    log_kv("PlayerPlaneId", LoGetPlayerPlaneId())
+    log_value("LoGetModelTime", LoGetModelTime())
+    log_value("LoGetMissionStartTime", LoGetMissionStartTime())
+    log_value("LoGetPilotName", LoGetPilotName())
+    log_value("LoGetPlayerPlaneId", LoGetPlayerPlaneId())
 
     -- ---------------------------------------------------------
-    -- 2. Basic Flight
+    -- Basic Flight
     -- ---------------------------------------------------------
     log.write("Export", log.INFO, "--- BASIC FLIGHT ---")
-    log_kv("IndicatedAirSpeed", LoGetIndicatedAirSpeed())
-    log_kv("TrueAirSpeed", LoGetTrueAirSpeed())
-    log_kv("AltitudeASL", LoGetAltitudeAboveSeaLevel())
-    log_kv("AltitudeAGL", LoGetAltitudeAboveGroundLevel())
-    log_kv("AngleOfAttack", LoGetAngleOfAttack())
-    log_kv("VerticalVelocity", LoGetVerticalVelocity())
-    log_kv("MachNumber", LoGetMachNumber())
-    log_kv("MagneticYaw", LoGetMagneticYaw())
-    log_kv("GlideDeviation", LoGetGlideDeviation())
-    log_kv("SideDeviation", LoGetSideDeviation())
-    log_kv("SlipBallPosition", LoGetSlipBallPosition())
-    log_kv("BasicAtmPressure", LoGetBasicAtmospherePressure())
+    log_value("LoGetIndicatedAirSpeed", LoGetIndicatedAirSpeed())
+    log_value("LoGetTrueAirSpeed", LoGetTrueAirSpeed())
+    log_value("LoGetAltitudeAboveSeaLevel", LoGetAltitudeAboveSeaLevel())
+    log_value("LoGetAltitudeAboveGroundLevel", LoGetAltitudeAboveGroundLevel())
+    log_value("LoGetAngleOfAttack", LoGetAngleOfAttack())
+    log_value("LoGetVerticalVelocity", LoGetVerticalVelocity())
+    log_value("LoGetMachNumber", LoGetMachNumber())
+    log_value("LoGetMagneticYaw", LoGetMagneticYaw())
+    log_value("LoGetGlideDeviation", LoGetGlideDeviation())
+    log_value("LoGetSideDeviation", LoGetSideDeviation())
+    log_value("LoGetSlipBallPosition", LoGetSlipBallPosition())
+    log_value("LoGetBasicAtmospherePressure", LoGetBasicAtmospherePressure())
 
     -- ADI (returns 3 values: pitch, bank, yaw)
-    local p, b, y = LoGetADIPitchBankYaw()
-    log_kv("ADI_Pitch", p)
-    log_kv("ADI_Bank", b)
-    log_kv("ADI_Yaw", y)
+    local LoGetADI_Pitch, LoGetADI_Bank, LoGetADI_Yaw = LoGetADIPitchBankYaw()
+    log_value("LoGetADI_Pitch", LoGetADI_Pitch)
+    log_value("LoGetADI_Bank", LoGetADI_Bank)
+    log_value("LoGetADI_Yaw", LoGetADI_Yaw)
 
     -- Acceleration (returns table with x, y, z)
-    local accel = LoGetAccelerationUnits()
-    if accel then
-        log_table("Accel", accel)
-    else
-        log_str("Accel", "nil")
-    end
+    local LoGetAccelerationUnits = LoGetAccelerationUnits()
+    log_value("LoGetAccelerationUnits", LoGetAccelerationUnits)
 
     -- ---------------------------------------------------------
-    -- 3. Velocity Vectors
+    -- Velocity Vectors
     -- ---------------------------------------------------------
     log.write("Export", log.INFO, "--- VELOCITY VECTORS ---")
     
     -- Self velocity vector
-    local vel = LoGetVectorVelocity()
-    if vel then
-        log_table("VelWorld", vel)
-    else
-        log_str("VelWorld", "nil")
-    end
+    local LoGetVectorVelocity = LoGetVectorVelocity()
+    log_value("LoGetVectorVelocity", LoGetVectorVelocity)
 
     -- Angular velocity
-    local angVel = LoGetAngularVelocity()
-    if angVel then
-        log_table("AngVel", angVel)
-    else
-        log_str("AngVel", "nil")
-    end
+    local LoGetAngularVelocity = LoGetAngularVelocity()
+    log_value("LoGetAngularVelocity", LoGetAngularVelocity)
 
     -- Wind velocity
-    local wind = LoGetVectorWindVelocity()
-    if wind then
-        log_table("Wind", wind)
-    else
-        log_str("Wind", "nil")
-    end
+    local LoGetVectorWindVelocity = LoGetVectorWindVelocity()
+    log_value("LoGetVectorWindVelocity", LoGetVectorWindVelocity)
 
     -- ---------------------------------------------------------
-    -- 4. Engine Info
+    -- Engine Info
     -- ---------------------------------------------------------
     log.write("Export", log.INFO, "--- ENGINE ---")
-    local eng = LoGetEngineInfo()
-    if eng then
-        log_table("Eng", eng)
-    else
-        log_str("EngineInfo", "nil")
-    end
+    local LoGetEngineInfo = LoGetEngineInfo()
+    log_value("LoGetEngineInfo", LoGetEngineInfo)
 
     -- ---------------------------------------------------------
-    -- 5. HSI (Horizontal Situation Indicator)
+    -- HSI (Horizontal Situation Indicator)
     -- ---------------------------------------------------------
     log.write("Export", log.INFO, "--- HSI ---")
-    local hsi = LoGetControlPanel_HSI()
-    if hsi then
-        log_table("HSI", hsi)
-    else
-        log_str("HSI", "nil")
-    end
+    local LoGetControlPanel_HSI = LoGetControlPanel_HSI()
+    log_value("LoGetControlPanel_HSI", LoGetControlPanel_HSI)
 
     -- ---------------------------------------------------------
-    -- 6. Navigation Info
+    -- Navigation Info
     -- ---------------------------------------------------------
     log.write("Export", log.INFO, "--- NAVIGATION ---")
-    local nav = LoGetNavigationInfo()
-    if nav then
-        log_table("Nav", nav)
-    else
-        log_str("NavigationInfo", "nil")
-    end
+    local LoGetNavigationInfo = LoGetNavigationInfo()
+    log_value("LoGetNavigationInfo", LoGetNavigationInfo)
 
     -- ---------------------------------------------------------
-    -- 7. Route Info
+    -- Route Info
     -- ---------------------------------------------------------
     log.write("Export", log.INFO, "--- ROUTE ---")
-    local route = LoGetRoute()
-    if route then
-        log_table("Route", route)
-    else
-        log_str("Route", "nil")
-    end
+    local LoGetRoute = LoGetRoute()
+    log_value("LoGetRoute", LoGetRoute)
 
     -- ---------------------------------------------------------
-    -- 8. Mechanical Info
+    -- Mechanical Info
     -- ---------------------------------------------------------
     log.write("Export", log.INFO, "--- MECHANICAL ---")
-    local mech = LoGetMechInfo()
-    if mech then
-        log_table("Mech", mech)
-    else
-        log_str("MechInfo", "nil")
-    end
+    local LoGetMechInfo = LoGetMechInfo()
+    log_value("LoGetMechInfo", LoGetMechInfo)
 
     -- ---------------------------------------------------------
-    -- 9. MCP State (Master Caution Panel)
+    -- MCP State (Master Caution Panel)
     -- ---------------------------------------------------------
     log.write("Export", log.INFO, "--- MCP STATE ---")
-    local mcp = LoGetMCPState()
-    if mcp then
-        log_table("MCP", mcp)
-    else
-        log_str("MCPState", "nil")
-    end
+    local LoGetMCPState = LoGetMCPState()
+    log_value("LoGetMCPState", LoGetMCPState)
 
     -- ---------------------------------------------------------
-    -- 10. Snares (Countermeasures)
+    -- Snares (Countermeasures)
     -- ---------------------------------------------------------
     log.write("Export", log.INFO, "--- SNARES ---")
-    local snares = LoGetSnares()
-    if snares then
-        log_table("Snares", snares)
-    else
-        log_str("Snares", "nil")
-    end
+    local LoGetSnares = LoGetSnares()
+    log_value("LoGetSnares", LoGetSnares)
 
     -- ---------------------------------------------------------
-    -- 11. Payload Info
+    -- Payload Info
     -- ---------------------------------------------------------
     log.write("Export", log.INFO, "--- PAYLOAD ---")
-    local payload = LoGetPayloadInfo()
-    if payload then
-        log_table("Payload", payload)
-    else
-        log_str("Payload", "nil")
-    end
+    local LoGetPayloadInfo = LoGetPayloadInfo()
+    log_value("LoGetPayloadInfo", LoGetPayloadInfo)
 
     -- ---------------------------------------------------------
-    -- 12. Self Data
+    -- Self Data
     -- ---------------------------------------------------------
     log.write("Export", log.INFO, "--- SELF DATA ---")
-    local selfData = LoGetSelfData()
-    if selfData then
-        log_table("Self", selfData)
-    else
-        log_str("SelfData", "nil")
-    end
+    local LoGetSelfData = LoGetSelfData()
+    log_value("LoGetSelfData", LoGetSelfData)
 
     -- ---------------------------------------------------------
-    -- 13. Camera Position
-    -- ---------------------------------------------------------
-    log.write("Export", log.INFO, "--- CAMERA ---")
-    local cam = LoGetCameraPosition()
-    if cam then
-        log_table("Camera", cam)
-    else
-        log_str("Camera", "nil")
-    end
-
-    -- ---------------------------------------------------------
-    -- 14. Radio Beacons
+    -- Radio Beacons
     -- ---------------------------------------------------------
     log.write("Export", log.INFO, "--- RADIO BEACONS ---")
-    local beacons = LoGetRadioBeaconsStatus()
-    if beacons then
-        log_table("Beacons", beacons)
-    else
-        log_str("Beacons", "nil")
-    end
-end
+    local LoGetRadioBeaconsStatus = LoGetRadioBeaconsStatus()
+    log_value("LoGetRadioBeaconsStatus", LoGetRadioBeaconsStatus)
 
--- =============================================================================
--- LOW FREQUENCY (every 2 seconds)
--- =============================================================================
-function LuaExportActivityNextEvent(t)
-    log.write("Export", log.INFO, "=== LOW FREQ DATA (t=" .. string.format("%.2f", t) .. ") ===")
-    
-    -- ---------------------------------------------------------
-    -- 15. Sighting System Info
+    -- Sighting System Info
     -- ---------------------------------------------------------
     log.write("Export", log.INFO, "--- SIGHTING SYSTEM ---")
-    local sight = LoGetSightingSystemInfo()
-    if sight then
-        log_table("Sight", sight)
-    else
-        log_str("SightingSystem", "nil")
-    end
+    local LoGetSightingSystemInfo = LoGetSightingSystemInfo()
+    log_value("LoGetSightingSystemInfo", LoGetSightingSystemInfo)
 
     -- ---------------------------------------------------------
-    -- 16. TWS (Threat Warning System)
+    -- TWS (Threat Warning System)
     -- ---------------------------------------------------------
     log.write("Export", log.INFO, "--- TWS ---")
-    local tws = LoGetTWSInfo()
-    if tws then
-        log_table("TWS", tws)
-    else
-        log_str("TWSInfo", "nil")
-    end
+    local LoGetTWSInfo = LoGetTWSInfo()
+    log_value("LoGetTWSInfo", LoGetTWSInfo)
 
     -- ---------------------------------------------------------
-    -- 17. Target Information (all targets)
+    -- Target Information (all targets)
     -- ---------------------------------------------------------
     log.write("Export", log.INFO, "--- ALL TARGETS ---")
-    local targets = LoGetTargetInformation()
-    if targets then
-        log_kv("AllTargets_Count", #targets)
-        for i, trg in ipairs(targets) do
-            log_table("AllTarget_"..i, trg)
+    local LoGetTargetInformation = LoGetTargetInformation()
+    if LoGetTargetInformation then
+        log_value("LoGetTargetInformation_Count", #LoGetTargetInformation)
+        for i, trg in ipairs(LoGetTargetInformation) do
+            log_value("LoGetTargetInformation_"..i, trg)
         end
     else
-        log_str("AllTargets", "nil")
+        log_value("LoGetTargetInformation", "nil")
     end
 
     -- ---------------------------------------------------------
-    -- 18. Locked Target Information
+    -- Locked Target Information
     -- ---------------------------------------------------------
     log.write("Export", log.INFO, "--- LOCKED TARGETS ---")
-    local locked = LoGetLockedTargetInformation()
-    if locked then
-        log_kv("LockedTargets_Count", #locked)
-        for i, trg in ipairs(locked) do
-            log_table("LockedTarget_"..i, trg)
+    local LoGetLockedTargetInformation = LoGetLockedTargetInformation()
+    if LoGetLockedTargetInformation then
+        log_value("LoGetLockedTargetInformation_Count", #LoGetLockedTargetInformation)
+        for i, trg in ipairs(LoGetLockedTargetInformation) do
+            log_value("LoGetLockedTargetInformation_"..i, trg)
         end
     else
-        log_str("LockedTargets", "nil")
+        log_value("LoGetLockedTargetInformation", "nil")
     end
 
     -- ---------------------------------------------------------
-    -- 19. Wingmen Info
+    -- Wingmen Info
     -- ---------------------------------------------------------
     log.write("Export", log.INFO, "--- WINGMEN ---")
-    local wing = LoGetWingInfo()
-    if wing then
-        log_kv("Wingmen_Count", #wing)
-        for i, w in ipairs(wing) do
-            log_table("Wingman_"..i, w)
+    local LoGetWingInfo = LoGetWingInfo()
+    if LoGetWingInfo then
+        log_value("LoGetWingInfo_Count", #LoGetWingInfo)
+        for i, w in ipairs(LoGetWingInfo) do
+            log_value("LoGetWingInfo_"..i, w)
         end
     else
-        log_str("WingInfo", "nil")
+        log_value("LoGetWingInfo", "nil")
     end
 
     -- ---------------------------------------------------------
-    -- 20. Wing Targets
+    -- Wing Targets
     -- ---------------------------------------------------------
     log.write("Export", log.INFO, "--- WING TARGETS ---")
-    local wingTgts = LoGetWingTargets()
-    if wingTgts then
-        log_kv("WingTargets_Count", #wingTgts)
-        for i, wt in ipairs(wingTgts) do
-            if type(wt) == "table" then
-                log_table("WingTarget_"..i, wt)
-            else
-                log_kv("WingTarget_"..i, wt)
-            end
+    local LoGetWingTargets = LoGetWingTargets()
+    if LoGetWingTargets then
+        log_value("LoGetWingTargets_Count", #LoGetWingTargets)
+        for i, wt in ipairs(LoGetWingTargets) do
+            log_value("LoGetWingTargets_"..i, wt)
         end
     else
-        log_str("WingTargets", "nil")
+        log_value("LoGetWingTargets", "nil")
     end
 
+    --[[
     -- ---------------------------------------------------------
-    -- 21. Object by ID
+    -- Object by ID
     -- ---------------------------------------------------------
     log.write("Export", log.INFO, "--- OBJECT BY ID ---")
     -- Test with your own aircraft (always available)
     local selfId = LoGetPlayerPlaneId()
     if selfId then
-        log_kv("LookingUp_ID", selfId)
-        local objById = LoGetObjectById(selfId)
-        if objById then
-            log_table("ObjectByID_Self", objById)
-        else
-            log_str("ObjectByID_Self", "nil")
-        end
+        log_value("LookingUp_ID", selfId)
+        log_value("ObjectByID_Self", LoGetObjectById(selfId))
     else
-        log_str("PlayerPlaneId", "nil")
+        log_value("PlayerPlaneId", "nil")
     end
+    --]]
 
+    --[[
     -- ---------------------------------------------------------
-    -- 22. World Objects (HUGE - be careful!)
+    -- Camera Position
     -- ---------------------------------------------------------
-    -- Uncomment if you really need ALL world objects:
-    -- log.write("Export", log.INFO, "--- WORLD OBJECTS ---")
-    -- local world = LoGetWorldObjects()
-    -- if world then
-    --     local count = 0
-    --     for k, v in pairs(world) do
-    --         count = count + 1
-    --         log_table("WorldObj_"..k, v)
-    --     end
-    --     log_kv("WorldObjects_Total", count)
-    -- else
-    --     log_str("WorldObjects", "nil")
-    -- end
+    log.write("Export", log.INFO, "--- CAMERA ---")
+    local LoGetCameraPosition = LoGetCameraPosition()
+    log_value("LoGetCameraPosition", LoGetCameraPosition)
+    --]]
 
-    return t + 2.0
-end
+    --[[
+    LoGetWorldObjects
+    LoGetAltitude
+    LoGetCameraPosition
+    LoGetNameByType
+    LoGeoCoordinatesToLoCoordinates
+    LoLoCoordinatesToGeoCoordinates
+    LoGetHelicopterFMData
+    --]]
 
--- =============================================================================
--- Coroutine support (required by DCS)
--- =============================================================================
-function CoroutineResume(index, tCurrent)
-    local ok, tNext = coroutine.resume(Coroutines[index], tCurrent)
-    return ok and coroutine.status(Coroutines[index]) ~= "dead"
+
 end
 
 -- =============================================================================
 -- Stop
 -- =============================================================================
 function LuaExportStop()
-    log.write("Export", log.INFO, "=== Export stopped ===")
+    log.write("Export", log.INFO, "=== EXPORT STOPPED ===")
 end
