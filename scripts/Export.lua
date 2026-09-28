@@ -1,9 +1,3 @@
--- ==========================================================
--- Su-25T cold start + auto takeoff, with debug logging
--- Put this file at: Saved Games\DCS\Scripts\Export.lua
--- Log file will appear at: Saved Games\DCS\Logs\Su25AutoTakeoff.log
--- ==========================================================
-
 local phase = "wait"
 local startTime = nil
 local phaseTime = nil      -- when the current phase started
